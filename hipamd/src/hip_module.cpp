@@ -372,7 +372,7 @@ hipError_t ihipModuleLaunchKernel(hipFunction_t f, uint32_t globalWorkSizeX,
   hip::DeviceFunc* function = hip::DeviceFunc::asFunction(f);
   amd::Kernel* kernel = function->kernel();
 
-  amd::ScopedLock lock (!DEBUG_HIP_KERNARG_COPY_OPT ? &function->dflock_ : nullptr);
+  amd::ScopedLock lock (DEBUG_HIP_KERNARG_COPY_OPT ? &function->dflock_ : nullptr);
 
   hipError_t status = ihipLaunchKernel_validate(
       f, globalWorkSizeX, globalWorkSizeY, globalWorkSizeZ, blockDimX, blockDimY, blockDimZ,
