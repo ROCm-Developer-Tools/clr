@@ -353,8 +353,6 @@ hipError_t hipStreamSynchronize_common(hipStream_t stream) {
 
     // Release freed memory for all memory pools on the device
     getCurrentDevice()->ReleaseFreedMemory();
-    // null stream will sync with other streams.
-    ReleaseGraphExec(getCurrentDevice()->deviceId());
   } else {
     constexpr bool wait = false;
     auto hip_stream = hip::getStream(stream, wait);
@@ -362,7 +360,6 @@ hipError_t hipStreamSynchronize_common(hipStream_t stream) {
     // Wait for the current host queue
     hip_stream->finish();
 
-    ReleaseGraphExec(hip_stream);
     // Release freed memory for all memory pools on the device
     hip_stream->GetDevice()->ReleaseFreedMemory();
   }

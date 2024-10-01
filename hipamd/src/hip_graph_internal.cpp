@@ -51,10 +51,6 @@ const char* GetGraphNodeTypeString(uint32_t op) {
 }
 
 namespace hip {
-std::unordered_map<GraphExec *, std::pair<hip::Stream *, bool>>
-    GraphExecStatus_ ROCCLR_INIT_PRIORITY(101);
-amd::Monitor GraphExecStatusLock_ ROCCLR_INIT_PRIORITY(101){
-    "Guards graph execution state"};
 
 int GraphNode::nextID = 0;
 int Graph::nextID = 0;
@@ -610,6 +606,15 @@ void UpdateStream(std::vector<std::vector<Node>>& parallelLists, hip::Stream* st
   }
 }
 
+// ================================================================================================
+
+void GraphExec::DecrementRefCount(cl_event event, cl_int command_exec_status, void* user_data) {
+  GraphExec* graphExec = reinterpret_cast<GraphExec*>(user_data);
+  graphExec->release();
+}
+
+// ================================================================================================
+
 hipError_t EnqueueGraphWithSingleList(std::vector<hip::Node>& topoOrder, hip::Stream* hip_stream,
                                       hip::GraphExec* graphExec) {
   // Accumulate command tracks all the AQL packet batch that we submit to the HW. For now
@@ -891,44 +896,29 @@ hipError_t GraphExec::Run(hipStream_t graph_launch_stream) {
       }
     }
   }
-  amd::ScopedLock lock(GraphExecStatusLock_);
-  GraphExecStatus_[this] = std::make_pair(launch_stream, false);
+  this->retain();
+  amd::Command* CallbackCommand = new amd::Marker(*launch_stream, kMarkerDisableFlush, {});
+  // we may not need to flush any caches.
+  CallbackCommand->setEventScope(amd::Device::kCacheStateIgnore);
+  amd::Event& event = CallbackCommand->event();
+  if (!event.setCallback(CL_COMPLETE, GraphExec::DecrementRefCount, this)) {
+    return hipErrorInvalidHandle;
+  }
+  CallbackCommand->enqueue();
+  // Add the new barrier to stall the stream, until the callback is done
+  amd::Command::EventWaitList eventWaitList;
+  eventWaitList.push_back(CallbackCommand);
+  amd::Command* block_command = new amd::Marker(*launch_stream, kMarkerDisableFlush, eventWaitList);
+  // we may not need to flush any caches.
+  block_command->setEventScope(amd::Device::kCacheStateIgnore);
+  if (block_command == nullptr) {
+    return hipErrorInvalidValue;
+  }
+  block_command->enqueue();
+  block_command->release();
+  CallbackCommand->release();
   ResetQueueIndex();
   return status;
-}
-
-void ReleaseGraphExec(int deviceId) {
-  // Release all graph exec objects destroyed by user.
-  amd::ScopedLock lock(GraphExecStatusLock_);
-  for (auto itr = GraphExecStatus_.begin(); itr != GraphExecStatus_.end();) {
-    auto pair = itr->second;
-    if (pair.first->DeviceId() == deviceId) {
-      if (pair.second == true) {
-        ClPrint(amd::LOG_INFO, amd::LOG_API, "[hipGraph] Release GraphExec");
-        (itr->first)->release();
-      }
-      GraphExecStatus_.erase(itr++);
-    } else {
-      itr++;
-    }
-  }
-}
-
-void ReleaseGraphExec(hip::Stream* stream) {
-  amd::ScopedLock lock(GraphExecStatusLock_);
-  for (auto itr = GraphExecStatus_.begin(); itr != GraphExecStatus_.end();) {
-    auto pair = itr->second;
-    if (pair.first == stream) {
-      if (pair.second == true) {
-        ClPrint(amd::LOG_INFO, amd::LOG_API, "[hipGraph] Release GraphExec");
-        (itr->first)->release();
-      }
-      GraphExecStatus_.erase(itr++);
-      break;
-    } else {
-      ++itr;
-    }
-  }
 }
 
 // ================================================================================================
@@ -937,7 +927,9 @@ bool GraphKernelArgManager::AllocGraphKernargPool(size_t pool_size) {
   assert(pool_size > 0);
   address graph_kernarg_base;
   auto device = g_devices[ihipGetDevice()]->devices()[0];
-
+  // Current device is stored as part of tls. Save current device to destroy kernelArgs from the
+  // callback thread.
+  device_ = device;
   if (device->info().largeBar_) {
     graph_kernarg_base = reinterpret_cast<address>(device->deviceLocalAlloc(pool_size));
     device_kernarg_pool_ = true;
@@ -976,13 +968,12 @@ address GraphKernelArgManager::AllocKernArg(size_t size, size_t alignment) {
 }
 
 void GraphKernelArgManager::ReadBackOrFlush() {
-  if (device_kernarg_pool_) {
-    auto device = g_devices[ihipGetDevice()]->devices()[0];
-    auto kernArgImpl = device->settings().kernel_arg_impl_;
+  if (device_kernarg_pool_ && device_) {
+    auto kernArgImpl = device_->settings().kernel_arg_impl_;
 
     if (kernArgImpl == KernelArgImpl::DeviceKernelArgsHDP) {
-      *device->info().hdpMemFlushCntl = 1u;
-      auto kSentinel = *reinterpret_cast<volatile int*>(device->info().hdpMemFlushCntl);
+      *device_->info().hdpMemFlushCntl = 1u;
+      auto kSentinel = *reinterpret_cast<volatile int*>(device_->info().hdpMemFlushCntl);
     } else if (kernArgImpl == KernelArgImpl::DeviceKernelArgsReadback &&
                kernarg_graph_.back().kernarg_pool_addr_ != 0) {
       address dev_ptr =
