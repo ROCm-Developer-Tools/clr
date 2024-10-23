@@ -358,14 +358,9 @@ hipError_t hipStreamSynchronize_common(hipStream_t stream) {
   } else {
     constexpr bool wait = false;
     auto hip_stream = hip::getStream(stream, wait);
-    bool wait_for_cpu = false;
-    // Force blocking wait if requested. That allows to avoid a build up of unreleased CPU commands
-    if (DEBUG_HIP_BLOCK_SYNC != 0) {
-      static std::atomic<uint64_t> flush = 0;
-      wait_for_cpu = ((++flush % DEBUG_HIP_BLOCK_SYNC) == 0) ? true : false;
-    }
+
     // Wait for the current host queue
-    hip_stream->finish(wait_for_cpu);
+    hip_stream->finish();
 
     ReleaseGraphExec(hip_stream);
     // Release freed memory for all memory pools on the device
