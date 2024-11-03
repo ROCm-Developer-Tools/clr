@@ -322,12 +322,20 @@ SysmemPool<ComputeCommand> Command::command_pool_ ROCCLR_INIT_PRIORITY(101);
 
 // ================================================================================================
 void Command::operator delete(void* ptr) {
-  command_pool_.Free(ptr);
+  if (DEBUG_CLR_SYSMEM_POOL) {
+    command_pool_.Free(ptr);
+  } else {
+    ::operator delete (ptr);
+  }
 }
 
 // ================================================================================================
 void* Command::operator new(size_t size) {
-  return command_pool_.Alloc(size);
+  if (DEBUG_CLR_SYSMEM_POOL) {
+    return command_pool_.Alloc(size);
+  } else {
+    return ::operator new (size);
+  }
 }
 
 // ================================================================================================
