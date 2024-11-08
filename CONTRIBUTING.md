@@ -1,7 +1,7 @@
 # Contributing to HIP/CLR #
 
 We welcome contributions to the HIP project.
-CLR is a part of HIP runtime for the AMD platform.Please follow these details to help ensure your contributions will be successfully accepted.
+CLR (Compute Language Runtime) is a part of HIP runtime for the AMD platform.Please follow these details to help ensure your contributions will be successfully accepted.
 
 ## Issue Discussion ##
 
@@ -23,7 +23,7 @@ Please use the [GitHub Issue](https://github.com/ROCm/clr/issues) tab to notify 
 
 ## Acceptance Criteria ##
 
-clr is Common Language Runtime contains C++ codes for the implementation of HIP runtime APIs on the AMD platform.
+clr contains C++ codes for the implementation of HIP runtime APIs on the AMD platform.
 Bug fixes and performance are both important goals in clr. Because of this, when a pull request is created, the owner of the repository will review, and put it in automated testing to make sure,
 * The change will build on various OS platforms (Ubuntu, RHEL, etc.)
 * The build package will install and run the code on different GPU architectures (MI-series, Radeon series cards, etc.),
@@ -38,7 +38,7 @@ clr contains three parts of codes,
 
 - `opencl` - contains implementation of OpenCL on the AMD platform.
 
-- `rocclr` - contains common runtime used in HIP and OpenCL, which includes
+- `rocclr` - contains compute runtime used in HIP and OpenCL, which includes
    - `include`, header files,
    - `device`, implementation of GPU device related interfaces to the backend support,
    - `cimpiler`, implementation of interfaces with compiler,
