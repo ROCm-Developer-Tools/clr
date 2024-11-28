@@ -465,7 +465,8 @@ public:
   /// HIP Device class
   class Device : public amd::ReferenceCountedObject {
     amd::Monitor lock_{"Device lock", true};
-    amd::Monitor streamSetLock{"Guards device stream set"};
+    // Guards device stream set
+    std::shared_mutex streamSetLock;
     std::unordered_set<hip::Stream*> streamSet;
     /// ROCclr context
     amd::Context* context_;
