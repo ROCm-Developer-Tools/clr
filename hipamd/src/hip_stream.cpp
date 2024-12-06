@@ -23,6 +23,7 @@
 #include "hip_event.hpp"
 #include "thread/monitor.hpp"
 #include "hip_prof_api.h"
+#include <atomic>
 
 namespace hip {
 
@@ -30,7 +31,7 @@ namespace hip {
 Stream::Stream(hip::Device* dev, Priority p, unsigned int f, bool null_stream,
                const std::vector<uint32_t>& cuMask, hipStreamCaptureStatus captureStatus)
     : amd::HostQueue(*dev->asContext(), *dev->devices()[0], 0, amd::CommandQueue::RealTimeDisabled,
-        convertToQueuePriority(p), cuMask),
+                     convertToQueuePriority(p), cuMask),
       lock_("Stream Callback lock"),
       device_(dev),
       priority_(p),
@@ -39,10 +40,9 @@ Stream::Stream(hip::Device* dev, Priority p, unsigned int f, bool null_stream,
       cuMask_(cuMask),
       captureStatus_(captureStatus),
       originStream_(false),
-      captureID_(0)
-      {
-        device_->AddStream(this);
-      }
+      captureID_(0) {
+  device_->AddStream(this);
+}
 
 // ================================================================================================
 hipError_t Stream::EndCapture() {
@@ -75,12 +75,12 @@ bool Stream::Create() {
 void Stream::Destroy(hip::Stream* stream) {
   stream->device_->RemoveStream(stream);
   stream->release();
+  stream = nullptr;
 }
 
 // ================================================================================================
 bool Stream::terminate() {
   HostQueue::terminate();
-  ReleaseGraphExec(this);
   return true;
 }
 // ================================================================================================
@@ -136,8 +136,12 @@ bool Stream::StreamCaptureBlocking() {
 }
 
 bool Stream::StreamCaptureOngoing(hipStream_t hStream) {
+  if (hStream == nullptr || hStream == hipStreamLegacy) {
+    return false;
+  }
+
   hip::Stream* s = reinterpret_cast<hip::Stream*>(hStream);
-  if (s != nullptr && s->GetCaptureStatus() == hipStreamCaptureStatusNone) {
+  if (s->GetCaptureStatus() == hipStreamCaptureStatusNone) {
     // If current thread is capturing in relaxed mode
     if (hip::tls.stream_capture_mode_ == hipStreamCaptureModeRelaxed) {
       return false;
@@ -158,10 +162,10 @@ bool Stream::StreamCaptureOngoing(hipStream_t hStream) {
       return true;
     }
     return false;
-  } else if (s != nullptr && s->GetCaptureStatus() == hipStreamCaptureStatusActive) {
+  } else if (s->GetCaptureStatus() == hipStreamCaptureStatusActive) {
     s->SetCaptureStatus(hipStreamCaptureStatusInvalidated);
     return true;
-  } else if (s != nullptr && s->GetCaptureStatus() == hipStreamCaptureStatusInvalidated) {
+  } else if (s->GetCaptureStatus() == hipStreamCaptureStatusInvalidated) {
     return true;
   }
   return false;
@@ -346,26 +350,29 @@ hipError_t hipStreamSynchronize_common(hipStream_t stream) {
   if (!hip::isValid(stream)) {
     HIP_RETURN(hipErrorContextIsDestroyed);
   }
-  if (stream != nullptr) {
+  if (stream != nullptr && stream != hipStreamLegacy) {
     // If still capturing return error
     if (hip::Stream::StreamCaptureOngoing(stream) == true) {
       HIP_RETURN(hipErrorStreamCaptureUnsupported);
     }
   }
-  bool wait = (stream == nullptr) ? true : false;
-  constexpr bool kDontWaitForCpu = false;
 
-  auto hip_stream = hip::getStream(stream, wait);
-  // Wait for the current host queue
-  hip_stream->finish(kDontWaitForCpu);
   if (stream == nullptr) {
-    // null stream will sync with other streams.
-    ReleaseGraphExec(hip_stream->DeviceId());
+    // Do cpu wait on null stream and only on blocking streams
+    constexpr bool WaitblockingStreamOnly = true;
+    getCurrentDevice()->SyncAllStreams(true, WaitblockingStreamOnly);
+
+    // Release freed memory for all memory pools on the device
+    getCurrentDevice()->ReleaseFreedMemory();
   } else {
-    ReleaseGraphExec(hip_stream);
+    constexpr bool wait = false;
+    auto hip_stream = hip::getStream(stream, wait);
+
+    // Wait for the current host queue
+    hip_stream->finish();
+    // Release freed memory for all memory pools on the device
+    hip_stream->GetDevice()->ReleaseFreedMemory();
   }
-  // Release freed memory for all memory pools on the device
-  hip_stream->GetDevice()->ReleaseFreedMemory();
   return hipSuccess;
 }
 

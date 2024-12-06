@@ -586,6 +586,11 @@ hipError_t hipGraphExecChildGraphNodeSetParams(hipGraphExec_t hGraphExec, hipGra
   return hip::GetHipDispatchTable()->hipGraphExecChildGraphNodeSetParams_fn(hGraphExec, node,
                                                                             childGraph);
 }
+hipError_t hipGraphExecNodeSetParams(hipGraphExec_t hGraphExec, hipGraphNode_t node,
+                                     hipGraphNodeParams* nodeParams) {
+  return hip::GetHipDispatchTable()->hipGraphExecNodeSetParams_fn(hGraphExec, node,
+                                                                  nodeParams);
+}
 hipError_t hipGraphExecDestroy(hipGraphExec_t graphExec) {
   return hip::GetHipDispatchTable()->hipGraphExecDestroy_fn(graphExec);
 }
@@ -1754,6 +1759,9 @@ hipError_t hipDrvGraphExecMemsetNodeSetParams(hipGraphExec_t hGraphExec, hipGrap
   return hip::GetHipDispatchTable()->hipDrvGraphExecMemsetNodeSetParams_fn(hGraphExec, hNode,
                                    memsetParams, ctx);
 }
+hipError_t hipGraphExecGetFlags(hipGraphExec_t graphExec, unsigned long long* flags) {
+ return hip::GetHipDispatchTable()->hipGraphExecGetFlags_fn(graphExec, flags);
+}
 hipError_t hipDrvGraphAddMemFreeNode(hipGraphNode_t* phGraphNode, hipGraph_t hGraph,
                                   const hipGraphNode_t* dependencies, size_t numDependencies,
                                   hipDeviceptr_t dptr) {
@@ -1804,6 +1812,9 @@ hipError_t hipDrvGraphMemcpyNodeGetParams(hipGraphNode_t hNode, HIP_MEMCPY3D* no
 }
 hipError_t hipDrvGraphMemcpyNodeSetParams(hipGraphNode_t hNode, const HIP_MEMCPY3D* nodeParams) {
   return hip::GetHipDispatchTable()->hipDrvGraphMemcpyNodeSetParams_fn(hNode, nodeParams);
+}
+hipError_t hipGraphNodeSetParams(hipGraphNode_t node, hipGraphNodeParams *nodeParams) {
+  return hip::GetHipDispatchTable()->hipGraphNodeSetParams_fn(node, nodeParams);
 }
 hipError_t hipExtHostAlloc(void** ptr, size_t size, unsigned int flags) {
   return hip::GetHipDispatchTable()->hipExtHostAlloc_fn(ptr, size, flags);

@@ -311,6 +311,7 @@ class VirtualGPU : public device::VirtualDevice {
               amd::CommandQueue::Priority priority = amd::CommandQueue::Priority::Normal);
   ~VirtualGPU();
 
+  uint64_t getQueueID() { return hwRing_; }
   void submitReadMemory(amd::ReadMemoryCommand& vcmd);
   void submitWriteMemory(amd::WriteMemoryCommand& vcmd);
   void submitCopyMemory(amd::CopyMemoryCommand& vcmd);
@@ -352,8 +353,6 @@ class VirtualGPU : public device::VirtualDevice {
   void flush(amd::Command* list = nullptr, bool wait = false);
 
   void profilerAttach(bool enable = false) {}
-
-  bool isHandlerPending() const { return false; }
 
   bool isFenceDirty() const { return false; }
 

@@ -95,8 +95,14 @@ bool Heap::RemoveMemory(amd::Memory* memory, MemoryTimestamp* ts) {
 Heap::SortedMap::iterator Heap::EraseAllocaton(Heap::SortedMap::iterator& it) {
   auto memory = it->first.second;
   const device::Memory* dev_mem = memory->getDeviceMemory(*device_->devices()[0]);
+  void* dev_mem_vaddr = reinterpret_cast<void*>(dev_mem->virtualAddress());
   total_size_ -= it->first.first;
-  amd::SvmBuffer::free(memory->getContext(), reinterpret_cast<void*>(dev_mem->virtualAddress()));
+  
+  if (dev_mem_vaddr != nullptr) {
+    amd::SvmBuffer::free(memory->getContext(), dev_mem_vaddr);
+  } else {
+    amd::SvmBuffer::free(memory->getContext(), memory->getSvmPtr());
+  }
   // Clear HIP event
   it->second.SetEvent(nullptr);
   // Remove the allocation from the map
@@ -210,6 +216,8 @@ void* MemoryPool::AllocateMemory(size_t size, Stream* stream, void* dptr) {
     }
   } else {
     dev_ptr = memory->getSvmPtr();
+    if (!amd::MemObjMap::FindMemObj(dev_ptr))
+      amd::MemObjMap::AddMemObj(dev_ptr, memory);
   }
   // Place the allocated memory into the busy heap
   ts.AddSafeStream(stream);
@@ -281,7 +289,7 @@ bool MemoryPool::FreeMemory(amd::Memory* memory, Stream* stream, Event* event) {
           if (hipSuccess == e->addMarker(reinterpret_cast<hipStream_t>(stream), nullptr, true)) {
             ts.SetEvent(e);
             // Make sure runtime sends a notification
-            auto result = e->ready(Query);
+            auto result = e->ready();
           }
         }
       } else {

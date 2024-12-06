@@ -43,10 +43,12 @@ struct UniqueFD {
 
 namespace hip {
 class PlatformState {
-  amd::Monitor lock_{"Guards PlatformState globals", true};
+  // Guards PlatformState globals
+  amd::Monitor lock_{true};
 
   // global level lock for unique file descritor map: ufd_map_
-  amd::Monitor ufd_lock_{"Unique FD Store Lock", true};
+  // Unique FD Store Lock
+  amd::Monitor ufd_lock_{true};
 
   // Singleton object
   static PlatformState* platform_;
@@ -59,7 +61,7 @@ class PlatformState {
   // Dynamic Code Objects functions
   hipError_t loadModule(hipModule_t* module, const char* fname, const void* image = nullptr);
   hipError_t unloadModule(hipModule_t hmod);
-
+  bool isValidDynFunc(const void* hfunc);
   hipError_t getDynFunc(hipFunction_t* hfunc, hipModule_t hmod, const char* func_name);
   hipError_t getDynGlobalVar(const char* hostVar, hipModule_t hmod, hipDeviceptr_t* dev_ptr,
                              size_t* size_ptr);
@@ -80,7 +82,7 @@ class PlatformState {
   }
 
   // Static Code Objects functions
-  hip::FatBinaryInfo** addFatBinary(const void* data);
+  hip::FatBinaryInfo** addFatBinary(const void* data, bool& success);
   hipError_t removeFatBinary(hip::FatBinaryInfo** module);
   hipError_t digestFatBinary(const void* data, hip::FatBinaryInfo*& programs);
 

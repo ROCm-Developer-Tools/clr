@@ -33,9 +33,9 @@ THE SOFTWARE.
 #include <string>
 
 #include "top.hpp"
-#include "utils/debug.hpp"
-#include "utils/flags.hpp"
-#include "utils/macros.hpp"
+#include "rocclr/utils/debug.hpp"
+#include "rocclr/utils/flags.hpp"
+#include "rocclr/utils/macros.hpp"
 
 #ifdef __HIP_ENABLE_RTC
 extern "C" {
@@ -72,7 +72,8 @@ template <typename T, typename... Args> inline std::string ToString(T first, Arg
 }  // namespace internal
 }  // namespace hiprtc
 
-static amd::Monitor g_hiprtcInitlock{"hiprtcInit lock"};
+// hiprtcInit lock
+static amd::Monitor g_hiprtcInitlock{};
 #define HIPRTC_INIT_API_INTERNAL(...)                                                              \
   amd::Thread* thread = amd::Thread::current();                                                    \
   if (!VDI_CHECK_THREAD(thread)) {                                                                 \

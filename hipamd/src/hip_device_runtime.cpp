@@ -574,6 +574,11 @@ hipError_t hipDeviceReset(void) {
 hipError_t hipDeviceSetCacheConfig(hipFuncCache_t cacheConfig) {
   HIP_INIT_API(hipDeviceSetCacheConfig, cacheConfig);
 
+  if (cacheConfig != hipFuncCachePreferNone && cacheConfig != hipFuncCachePreferShared &&
+      cacheConfig != hipFuncCachePreferL1 && cacheConfig != hipFuncCachePreferEqual) {
+    HIP_RETURN(hipErrorInvalidValue);
+  }
+
   // No way to set cache config yet.
 
   HIP_RETURN(hipSuccess);
@@ -651,16 +656,17 @@ int ihipGetDevice() {
 hipError_t hipGetDevice(int* deviceId) {
   HIP_INIT_API(hipGetDevice, deviceId);
 
-  if (deviceId != nullptr) {
-    int dev = ihipGetDevice();
-    if (dev == -1) {
-      HIP_RETURN(hipErrorNoDevice);
-    }
-    *deviceId = dev;
-    HIP_RETURN(hipSuccess);
-  } else {
+  if (deviceId == nullptr) {
     HIP_RETURN(hipErrorInvalidValue);
   }
+
+  Device* device = hip::getCurrentDevice();
+  if (device == nullptr) {
+    HIP_RETURN(hipErrorNoDevice);
+  }
+
+  *deviceId = device->deviceId();
+  HIP_RETURN(hipSuccess, *deviceId);
 }
 
 hipError_t hipGetDeviceCount(int* count) {
@@ -680,6 +686,12 @@ hipError_t hipGetDeviceFlags(unsigned int* flags) {
 
 hipError_t hipSetDevice(int device) {
   HIP_INIT_API_NO_RETURN(hipSetDevice, device);
+
+  // Check if the device is already set
+  if (hip::tls.device_ != nullptr && hip::tls.device_->deviceId() == device) {
+    HIP_RETURN(hipSuccess);
+  }
+
   if (static_cast<unsigned int>(device) < g_devices.size()) {
     hip::setCurrentDevice(device);
 

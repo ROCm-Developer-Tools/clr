@@ -1,4 +1,4 @@
-/* Copyright (c) 2015 - 2021 Advanced Micro Devices, Inc.
+/* Copyright (c) 2015 - 2024 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -22,8 +22,8 @@
 #include "hip_internal.hpp"
 #include "hip_platform.hpp"
 #include "platform/runtime.hpp"
-#include "utils/flags.hpp"
-#include "utils/versions.hpp"
+#include "rocclr/utils/flags.hpp"
+#include "rocclr/utils/versions.hpp"
 
 namespace hip {
 std::once_flag g_ihipInitialized;
@@ -48,10 +48,11 @@ void init(bool* status) {
   }
   ClPrint(amd::LOG_INFO, amd::LOG_INIT, "Direct Dispatch: %d", AMD_DIRECT_DISPATCH);
 
-
   const std::vector<amd::Device*>& devices = amd::Device::getDevices(CL_DEVICE_TYPE_GPU, false);
+  const size_t deviceCount = devices.size();
+  g_devices.reserve(deviceCount);  // Pre-allocate space for better performance
 
-  for (unsigned int i=0; i<devices.size(); i++) {
+  for (unsigned int i = 0; i < deviceCount; i++) {
     // Enable active wait on the device by default
     devices[i]->SetActiveWait(true);
     // use the eternal contexts that already exist for new hip::Device's here
@@ -132,6 +133,9 @@ int getDeviceID(amd::Context& ctx) {
 // ================================================================================================
 hip::Stream* getNullStream(bool wait ) {
   Device* device = getCurrentDevice();
+  if (device == nullptr) {
+    LogError("Invalid device");
+  }
   return device ? device->NullStream(wait) : nullptr;
 }
 
@@ -308,6 +312,11 @@ hipError_t hipCtxGetCacheConfig(hipFuncCache_t* cacheConfig) {
 
 hipError_t hipCtxSetCacheConfig(hipFuncCache_t cacheConfig) {
   HIP_INIT_API(hipCtxSetCacheConfig, cacheConfig);
+
+  if (cacheConfig != hipFuncCachePreferNone && cacheConfig != hipFuncCachePreferShared &&
+      cacheConfig != hipFuncCachePreferL1 && cacheConfig != hipFuncCachePreferEqual) {
+    HIP_RETURN(hipErrorInvalidValue);
+  }
 
   assert(0 && "Unimplemented");
 

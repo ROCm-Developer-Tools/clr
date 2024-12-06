@@ -96,7 +96,7 @@ Memory::Memory(Context& context, Type type, Flags flags, size_t size, void* svmP
       svmHostAddress_(svmPtr),
       resOffset_(0),
       flagsEx_(0),
-      lockMemoryOps_("Memory Ops Lock", true) {
+      lockMemoryOps_(true) /* Memory Ops Lock */ {
   svmPtrCommited_ = (flags & CL_MEM_SVM_FINE_GRAIN_BUFFER) ? true : false;
   canBeCached_ = true;
 }
@@ -120,7 +120,7 @@ Memory::Memory(Memory& parent, Flags flags, size_t origin, size_t size, Type typ
       svmHostAddress_(parent.getSvmPtr()),
       resOffset_(0),
       flagsEx_(0),
-      lockMemoryOps_("Memory Ops Lock", true) {
+      lockMemoryOps_(true)  /* Memory Ops Lock */ {
   svmPtrCommited_ = parent.isSvmPtrCommited();
   canBeCached_ = true;
   parent_->retain();
@@ -416,21 +416,21 @@ device::Memory* Memory::getDeviceMemory(const Device& dev, bool alloc) {
 Memory::~Memory() {
   // For_each destructor callback:
   DestructorCallBackEntry* entry;
-  for (entry = destructorCallbacks_; entry != NULL; entry = entry->next_) {
+  for (entry = destructorCallbacks_; entry != nullptr; entry = entry->next_) {
     // invoke the callback function.
     entry->callback_(const_cast<cl_mem>(as_cl(this)), entry->data_);
   }
 
   // Release the parent.
-  if (NULL != parent_) {
+  if (parent_ != nullptr) {
     // Update cache if runtime destroys a subbuffer
-    if (NULL != parent_->getHostMem() && (vDev_ == NULL)) {
+    if (parent_->getHostMem() != nullptr && (vDev_ == nullptr)) {
       cacheWriteBack(nullptr);
     }
     parent_->removeSubBuffer(this);
   }
 
-  if (NULL != deviceMemories_) {
+  if (deviceMemories_ != nullptr) {
     // Destroy all device memory objects
     for (uint i = 0; i < numDevices_; ++i) {
       delete deviceMemories_[i].value_;
@@ -444,19 +444,22 @@ Memory::~Memory() {
 
   // Destroy the destructor callback entries
   DestructorCallBackEntry* callback = destructorCallbacks_;
-  while (callback != NULL) {
+  while (callback != nullptr) {
     DestructorCallBackEntry* next = callback->next_;
     delete callback;
     callback = next;
   }
 
   // Make sure runtime destroys the parent only after subbuffer destruction
-  if (NULL != parent_) {
+  if (parent_ != nullptr) {
     parent_->release();
   }
   hostMemRef_.deallocateMemory(context_());
-  if (getMemFlags() & CL_MEM_VA_RANGE_AMD) {
-    amd::MemObjMap::RemoveVirtualMemObj(getSvmPtr());
+  if (parent_ == nullptr && (getMemFlags() & CL_MEM_VA_RANGE_AMD)) {
+    // The mapping may manually be removed prior to objects destruction
+    if (amd::MemObjMap::FindVirtualMemObj(getSvmPtr())) {
+      amd::MemObjMap::RemoveVirtualMemObj(getSvmPtr());
+    }
     // If runtime executes graph mempool with VM, then VA can be mapped in space
     // for graph validation logic during execution. And the reason it's not unmaped
     // in graph itself because the app can have a graph without a free node
@@ -527,16 +530,22 @@ void Memory::commitSvmMemory() {
   ScopedLock lock(lockMemoryOps_);
   // if VRAM is visible for host, it is not necessary to mmap again
   if (!svmPtrCommited_ && !largeBarSystem_) {
-    amd::Os::commitMemory(svmHostAddress_, size_, amd::Os::MEM_PROT_RW);
-    svmPtrCommited_ = true;
+    if (amd::Os::commitMemory(svmHostAddress_, size_, amd::Os::MEM_PROT_RW)) {
+      svmPtrCommited_ = true;
+    } else {
+      LogPrintfError("Mem Map failed for the host address 0x%x", svmHostAddress_);
+    }
   }
 }
 
 void Memory::uncommitSvmMemory() {
   ScopedLock lock(lockMemoryOps_);
   if (svmPtrCommited_ && !(flags_ & CL_MEM_SVM_FINE_GRAIN_BUFFER)) {
-    amd::Os::uncommitMemory(svmHostAddress_, size_);
-    svmPtrCommited_ = false;
+    if (amd::Os::uncommitMemory(svmHostAddress_, size_)) {
+      svmPtrCommited_ = false;
+    } else {
+      LogPrintfError("Mem Unmap failed for the host address 0x%x", svmHostAddress_);
+    }
   }
 }
 
@@ -1291,6 +1300,15 @@ void Image::copyToBackingStore(void* initFrom) {
   }
 }
 
+template <typename In, typename Out> static Out interpret_value(In in) {
+  static_assert(sizeof(In) == sizeof(Out));
+  union {
+    In in_val;
+    Out out_val;
+  } u{in};
+  return u.out_val;
+}
+
 static int round_to_even(float v) {
   // clamp overflow
   if (v >= -(float)std::numeric_limits<int>::min()) {
@@ -1302,8 +1320,8 @@ static int round_to_even(float v) {
   static const unsigned int magic[2] = {0x4b000000u, 0xcb000000u};
 
   // round fractional values to integer value
-  if (fabsf(v) < *reinterpret_cast<const float*>(&magic[0])) {
-    float magicVal = *reinterpret_cast<const float*>(&magic[v < 0.0f]);
+  if (fabsf(v) < interpret_value<unsigned, float>(magic[0])) {
+    float magicVal = interpret_value<unsigned, float>(magic[v < 0.0f]);
     v += magicVal;
     v -= magicVal;
   }
@@ -1328,21 +1346,21 @@ static uint16_t float2half_rtz(float f) {
   }
   int values[5] = {0x47800000, 0x33800000, 0x38800000, 0x4b800000, 0x7f800000};
   // overflow
-  if (x >= *reinterpret_cast<float*>(&values[0])) {
-    if (x == *reinterpret_cast<float*>(&values[4])) {
+  if (x >= interpret_value<int, float>(values[0])) {
+    if (x == interpret_value<int, float>(values[4])) {
       return 0x7c00 | sign;
     }
     return 0x7bff | sign;
   }
 
   // underflow
-  if (x < *reinterpret_cast<float*>(&values[1])) {
+  if (x < interpret_value<int, float>(values[1])) {
     return sign;  // The halfway case can return 0x0001 or 0. 0 is even.
   }
 
   // half denormal
-  if (x < *reinterpret_cast<float*>(&values[2])) {
-    x *= *reinterpret_cast<float*>(&values[3]);
+  if (x < interpret_value<int, float>(values[2])) {
+    x *= interpret_value<int, float>(values[3]);
     return static_cast<uint16_t>((int)x | sign);
   }
 

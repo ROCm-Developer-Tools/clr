@@ -36,9 +36,14 @@ hip::Stream* Device::NullStream(bool wait) {
     amd::ScopedLock lock(lock_);
     if (null_stream_ == nullptr) {
       null_stream_ = new Stream(this, Stream::Priority::Normal, 0, true);
+      // Stream creation might be failed from rcor and in that case, vdev is null.
+      if (null_stream_->vdev() == nullptr) {
+        Stream::Destroy(null_stream_);
+      }
     }
   }
   if (null_stream_ == nullptr) {
+    LogError("Cannot create new Stream object");
     return nullptr;
   }
   if (wait == true) {
@@ -185,10 +190,9 @@ void Device::WaitActiveStreams(hip::Stream* blocking_stream, bool wait_null_stre
       waitForStream(null_stream_);
     }
   } else {
-    amd::ScopedLock lock(streamSetLock);
-
-    for (const auto& active_stream : streamSet) {
-      // If it's the current device
+    auto activeQueues = blocking_stream->device().getActiveQueues();
+    for (const auto& command : activeQueues) {
+      hip::Stream* active_stream = static_cast<hip::Stream*>(command);
       if (// Make sure it's a default stream
         ((active_stream->Flags() & hipStreamNonBlocking) == 0) &&
         // and it's not the current stream
@@ -216,19 +220,19 @@ void Device::WaitActiveStreams(hip::Stream* blocking_stream, bool wait_null_stre
 
 // ================================================================================================
 void Device::AddStream(Stream* stream) {
-  amd::ScopedLock lock(streamSetLock);
+  std::unique_lock lock(streamSetLock);
   streamSet.insert(stream);
 }
 
 // ================================================================================================
 void Device::RemoveStream(Stream* stream){
-  amd::ScopedLock lock(streamSetLock);
+  std::unique_lock lock(streamSetLock);
   streamSet.erase(stream);
 }
 
 // ================================================================================================
 bool Device::StreamExists(Stream* stream){
-  amd::ScopedLock lock(streamSetLock);
+  std::shared_lock lock(streamSetLock);
   if (streamSet.find(stream) != streamSet.end()) {
     return true;
   }
@@ -239,7 +243,7 @@ bool Device::StreamExists(Stream* stream){
 void Device::destroyAllStreams() {
   std::vector<Stream*> toBeDeleted;
   {
-    amd::ScopedLock lock(streamSetLock);
+    std::shared_lock lock(streamSetLock);
     for (auto& it : streamSet) {
       if (it->Null() == false ) {
         toBeDeleted.push_back(it);
@@ -253,15 +257,30 @@ void Device::destroyAllStreams() {
 }
 
 // ================================================================================================
-void Device::SyncAllStreams( bool cpu_wait) {
+void Device::SyncAllStreams(bool cpu_wait, bool wait_blocking_streams_only) {
   // Make a local copy to avoid stalls for GPU finish with multiple threads
   std::vector<hip::Stream*> streams;
   streams.reserve(streamSet.size());
   {
-    amd::ScopedLock lock(streamSetLock);
-    for (auto it : streamSet) {
-      streams.push_back(it);
-      it->retain();
+    std::shared_lock lock(streamSetLock);
+    if (wait_blocking_streams_only) {
+      auto null_stream = GetNullStream();
+      for (auto it : streamSet) {
+        if (it != null_stream && (it->Flags() & hipStreamNonBlocking) == 0) {
+          streams.push_back(it);
+          it->retain();
+        }
+      }
+      // Add null stream to the end of the list so that wait happens after all blocking streams.
+      if (null_stream != nullptr) {
+        streams.push_back(null_stream);
+        null_stream->retain();
+      }
+    } else {
+      for (auto it : streamSet) {
+        streams.push_back(it);
+        it->retain();
+      }
     }
   }
   for (auto it : streams) {
@@ -270,13 +289,11 @@ void Device::SyncAllStreams( bool cpu_wait) {
   }
   // Release freed memory for all memory pools on the device
   ReleaseFreedMemory();
-  // Release all graph exec objects destroyed by user.
-  ReleaseGraphExec(hip::getCurrentDevice()->deviceId());
 }
 
 // ================================================================================================
 bool Device::StreamCaptureBlocking() {
-  amd::ScopedLock lock(streamSetLock);
+  std::shared_lock lock(streamSetLock);
   for (auto& it : streamSet) {
     if (it->GetCaptureStatus() == hipStreamCaptureStatusActive && it->Flags() != hipStreamNonBlocking) {
       return true;
@@ -287,7 +304,7 @@ bool Device::StreamCaptureBlocking() {
 
 // ================================================================================================
 bool Device::existsActiveStreamForDevice() {
-  amd::ScopedLock lock(streamSetLock);
+  std::shared_lock lock(streamSetLock);
   for (const auto& active_stream : streamSet) {
     if (active_stream->GetQueueStatus()) {
       return true;

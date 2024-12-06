@@ -35,7 +35,14 @@
 
 namespace amd { /*@{*/
 
-enum LogLevel { LOG_NONE = 0, LOG_ERROR = 1, LOG_WARNING = 2, LOG_INFO = 3, LOG_DEBUG = 4 };
+enum LogLevel {
+  LOG_NONE           = 0,
+  LOG_ERROR          = 1,
+  LOG_WARNING        = 2,
+  LOG_INFO           = 3,
+  LOG_DEBUG          = 4,
+  LOG_EXTRA_DEBUG    = 5
+};
 
 enum LogMask {
   LOG_API       = 1,      //!< (0x1)     API call
@@ -59,6 +66,11 @@ enum LogMask {
   LOG_MEM_POOL  = 262144, //!< (0x40000) Memory pool allocation, including memory in graphs
   LOG_TS        = 524288, //!< (0x80000) Timestamp details
   LOG_ALWAYS    = -1      //!< (0xFFFFFFFF) Log always even mask flag is zero
+};
+
+// Flags to support backward incompatible changes before 7.0
+enum BreakingHipChange7 {
+  CHANGE_HIP_GET_LAST_ERROR = 1,              //!< (0x1)     HIP_GET_LAST_ERROR
 };
 
 //! \brief log file output

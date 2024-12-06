@@ -422,7 +422,7 @@ bool VirtualGPU::Queue::flush() {
   // Submit command buffer to OS
   Pal::Result result;
   if (gpu_.rgpCaptureEna()) {
-    result = gpu_.dev().rgpCaptureMgr()->TimedQueueSubmit(iQueue_, cmdBufIdCurrent_, submitInfo);
+    result = gpu_.dev().captureMgr()->TimedQueueSubmit(iQueue_, cmdBufIdCurrent_, submitInfo);
   } else {
     result = iQueue_->Submit(submitInfo);
   }
@@ -1025,12 +1025,11 @@ bool VirtualGPU::create(bool profiling, uint deviceQueueSize, uint rtCUs,
 
   // If the developer mode manager is available and it's not a device queue,
   // then enable RGP capturing
-  if ((index() != 0) && dev().rgpCaptureMgr() != nullptr) {
+  if ((index() != 0) && dev().captureMgr() != nullptr) {
     bool dbg_vmid = false;
     state_.rgpCaptureEnabled_ = true;
-    dev().rgpCaptureMgr()->RegisterTimedQueue(2 * index(), queue(MainEngine).iQueue_, &dbg_vmid);
-    dev().rgpCaptureMgr()->RegisterTimedQueue(2 * index() + 1, queue(SdmaEngine).iQueue_,
-                                              &dbg_vmid);
+    dev().captureMgr()->RegisterTimedQueue(2 * index(), queue(MainEngine).iQueue_, &dbg_vmid);
+    dev().captureMgr()->RegisterTimedQueue(2 * index() + 1, queue(SdmaEngine).iQueue_, &dbg_vmid);
   }
 
   return true;
@@ -1076,7 +1075,7 @@ VirtualGPU::~VirtualGPU() {
 
   // Destroy RGP trace
   if (rgpCaptureEna()) {
-    dev().rgpCaptureMgr()->FinishRGPTrace(this, true);
+    dev().captureMgr()->FinishRGPTrace(this, true);
   }
 
   while (!freeCbQueue_.empty()) {
@@ -1980,7 +1979,67 @@ void VirtualGPU::submitCopyMemoryP2P(amd::CopyMemoryP2PCommand& cmd) {
       }
       break;
     }
-    case CL_COMMAND_COPY_BUFFER_RECT:
+    case CL_COMMAND_COPY_BUFFER_RECT: {
+      if (p2pAllowed) {
+        result = blitMgr().copyBufferRect(*srcDevMem, *dstDevMem, cmd.srcRect(), cmd.dstRect(), size,
+                                          cmd.isEntireMemory(), cmd.copyMetadata());
+      } else {
+        amd::ScopedLock lock(dev().P2PStageOps());
+        Memory* dstStgMem = static_cast<pal::Memory*>(
+            dev().P2PStage()->getDeviceMemory(*cmd.source().getContext().devices()[0]));
+        Memory* srcStgMem = static_cast<pal::Memory*>(
+            dev().P2PStage()->getDeviceMemory(*cmd.destination().getContext().devices()[0]));
+
+        if ((cmd.srcRect().slicePitch_ * size[2]) <= Device::kP2PStagingSize) {
+          result = true;
+          // Perform 2 step transfer with staging buffer
+          result &= srcDevMem->dev().xferMgr().copyBufferRect(*srcDevMem, *dstStgMem, cmd.srcRect(),
+                                                              cmd.srcRect(), size, false,
+                                                              cmd.copyMetadata());
+
+          result &= dstDevMem->dev().xferMgr().copyBufferRect(*srcStgMem, *dstDevMem, cmd.srcRect(),
+                                                              cmd.dstRect(), size, false,
+                                                              cmd.copyMetadata());
+        }
+        else {
+          size_t srcOffset;
+          size_t dstOffset;
+          result = true;
+
+          for (size_t z = 0; z < size[2]; ++z) {
+            for (size_t y = 0; y < size[1]; ++y) {
+              srcOffset = cmd.srcRect().offset(0, y, z);
+              dstOffset = cmd.dstRect().offset(0, y, z);
+
+              amd::Coord3D srcOrigin(srcOffset);
+              amd::Coord3D dstOrigin(dstOffset);
+              size_t copy_size = Device::kP2PStagingSize;
+              size_t left_size = size[0];
+              amd::Coord3D stageOffset(0);
+              do {
+                if (left_size <= copy_size) {
+                  copy_size = left_size;
+                }
+                left_size -= copy_size;
+
+                // Perform 2 step transfer with staging buffer
+                result &= srcDevMem->partialMemCopyTo(*(srcDevMem->dev().xferQueue()), srcOrigin,
+                                                      stageOffset, copy_size, *dstStgMem);
+                srcDevMem->dev().xferQueue()->waitAllEngines();
+
+                result &= srcStgMem->partialMemCopyTo(*(dstDevMem->dev().xferQueue()), stageOffset,
+                                                      dstOrigin, copy_size, *dstDevMem);
+                srcStgMem->dev().xferQueue()->waitAllEngines();
+
+                srcOrigin.c[0] += copy_size;
+                dstOrigin.c[0] += copy_size;
+              } while (left_size > 0);
+            }
+          }
+        }
+      }
+      break;
+    }
     case CL_COMMAND_COPY_IMAGE:
     case CL_COMMAND_COPY_IMAGE_TO_BUFFER:
     case CL_COMMAND_COPY_BUFFER_TO_IMAGE:
@@ -2575,7 +2634,7 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes,
         newLocalSize[i] = sizes.local()[i];
       }
     }
-    dev().rgpCaptureMgr()->PreDispatch(
+    dev().captureMgr()->PreDispatch(
         this, hsaKernel,
         // Report global size in workgroups, since that's the RGP trace semantics
         newGlobalSize[0] / newLocalSize[0], newGlobalSize[1] / newLocalSize[1],
@@ -2758,7 +2817,7 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes,
 
   // Perform post dispatch logic for RGP traces
   if (rgpCaptureEna()) {
-    dev().rgpCaptureMgr()->PostDispatch(this);
+    dev().captureMgr()->PostDispatch(this);
   }
 
   return true;

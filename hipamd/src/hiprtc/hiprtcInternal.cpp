@@ -29,7 +29,7 @@ THE SOFTWARE.
 #include <sys/stat.h>
 
 #include "vdi_common.hpp"
-#include "utils/flags.hpp"
+#include "rocclr/utils/flags.hpp"
 
 namespace hiprtc {
 using namespace helpers;
@@ -184,11 +184,7 @@ RTCCompileProgram::RTCCompileProgram(std::string name_) : RTCProgram(name_), fgp
   compile_options_.push_back(hipVerMajor);
   compile_options_.push_back(hipVerMinor);
   compile_options_.push_back(hipVerPatch);
-  compile_options_.push_back("-D__HIPCC_RTC__");
-  compile_options_.push_back("-include");
-  compile_options_.push_back("hiprtc_runtime.h");
   compile_options_.push_back("-std=c++14");
-  compile_options_.push_back("-nogpuinc");
   compile_options_.push_back("-Wno-gnu-line-marker");
   compile_options_.push_back("-Wno-missing-prototypes");
 #ifdef _WIN32
@@ -306,7 +302,8 @@ bool RTCCompileProgram::transformOptions(std::vector<std::string>& compile_optio
   return findIsa();
 }
 
-amd::Monitor RTCProgram::lock_("HIPRTC Program", true);
+// HIPRTC Program lock
+amd::Monitor RTCProgram::lock_(true);
 
 bool RTCCompileProgram::compile(const std::vector<std::string>& options, bool fgpu_rdc) {
   if (!addSource_impl()) {

@@ -321,12 +321,20 @@ Command::Command(HostQueue& queue, cl_command_type type, const EventWaitList& ev
 SysmemPool<ComputeCommand>* Command::command_pool_ = new SysmemPool<ComputeCommand>;
 // ================================================================================================
 void Command::operator delete(void* ptr) {
-  return command_pool_->Free(ptr);
+  if (DEBUG_CLR_SYSMEM_POOL) {
+    command_pool_->Free(ptr);
+  } else {
+    ::operator delete (ptr);
+  }
 }
 
 // ================================================================================================
 void* Command::operator new(size_t size) {
-  return command_pool_->Alloc(size);
+  if (DEBUG_CLR_SYSMEM_POOL) {
+    return command_pool_->Alloc(size);
+  } else {
+    return ::operator new (size);
+  }
 }
 
 // ================================================================================================
@@ -366,12 +374,14 @@ void Command::enqueue() {
     ScopedLock sl(queue_->vdev()->execution());
     queue_->FormSubmissionBatch(this);
 
-    if (type() == CL_COMMAND_MARKER || type() == 0 || type() == CL_COMMAND_TASK) {
+    // Enqueue flushes, except profiling markers to avoid frequent expensive callbacks
+    if (((type() == 0) && profilingInfo().batch_flush_) ||
+        (type() == CL_COMMAND_MARKER) || (type() == CL_COMMAND_TASK)) {
       // The current HSA signal tracking logic requires profiling enabled for the markers
       EnableProfiling();
       // Update batch head for the current marker. Hence the status of all commands can be
       // updated upon the marker completion
-      SetBatchHead(queue_->GetSubmittionBatch());
+      SetBatchHead(queue_->GetSubmissionBatch());
 
       submit(*queue_->vdev());
 
@@ -379,6 +389,7 @@ void Command::enqueue() {
       queue_->ResetSubmissionBatch();
     } else {
       submit(*queue_->vdev());
+      queue_->FlushSubmissionBatch(this);
     }
   } else {
     queue_->append(*this);

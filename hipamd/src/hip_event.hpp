@@ -81,34 +81,30 @@ typedef struct ihipIpcEventShmem_s {
 class EventMarker : public amd::Marker {
  public:
   EventMarker(amd::HostQueue& stream, bool disableFlush, bool markerTs = false,
-              int32_t scope = amd::Device::kCacheStateInvalid)
+              int32_t scope = amd::Device::kCacheStateInvalid, bool batch_flush = true)
       : amd::Marker(stream, disableFlush) {
     profilingInfo_.enabled_ = true;
     profilingInfo_.marker_ts_ = markerTs;
+    profilingInfo_.batch_flush_ = batch_flush;
     profilingInfo_.clear();
     setEventScope(scope);
   }
 };
 
-enum eventType { Query, StreamWait, ElapsedTime };
 class Event {
   /// capture stream where event is recorded
   hipStream_t captureStream_ = nullptr;
   /// Previous captured nodes before event record
   std::vector<hip::GraphNode*> nodesPrevToRecorded_;
  protected:
-  bool CheckHwEvent(eventType type) {
-    bool ready;
-    if (type == Query) {
-      ready = g_devices[deviceId()]->devices()[0]->IsHwEventReadyForcedWait(*event_);
-    } else {
-      ready = g_devices[deviceId()]->devices()[0]->IsHwEventReady(*event_, false, flags_);
-    }
-    return ready;
+  bool CheckHwEvent() {
+    return g_devices[deviceId()]->devices()[0]->IsHwEventReady(*event_, false, flags_);
   }
 
  public:
-  Event(uint32_t flags) : flags_(flags), lock_("hipEvent_t", true),
+  constexpr static bool kBatchFlush = true;  //!< Flushes CPU command batch in direct dispatch mode
+
+  Event(uint32_t flags) : flags_(flags), lock_(true) /* hipEvent_t lock*/,
                               event_(nullptr), unrecorded_(false), stream_(nullptr) {
     // No need to init event_ here as addMarker does that
     device_id_ = hip::getCurrentDevice()->deviceId();  // Created in current device ctx
@@ -130,9 +126,10 @@ class Event {
   virtual hipError_t streamWait(hipStream_t stream, uint flags);
 
   virtual hipError_t recordCommand(amd::Command*& command, amd::HostQueue* stream,
-                                   uint32_t flags = 0);
+                                   uint32_t flags = 0, bool batch_flush = true);
   virtual hipError_t enqueueRecordCommand(hipStream_t stream, amd::Command* command, bool record);
-  hipError_t addMarker(hipStream_t stream, amd::Command* command, bool record);
+  hipError_t addMarker(hipStream_t stream, amd::Command* command,
+                       bool record, bool batch_flush = true);
 
   void BindCommand(amd::Command& command, bool record) {
     amd::ScopedLock lock(lock_);
@@ -166,7 +163,7 @@ class Event {
     return hipErrorInvalidConfiguration;
   }
   virtual bool awaitEventCompletion();
-  virtual bool ready(eventType type);
+  virtual bool ready();
   virtual int64_t time(bool getStartTs) const;
 
  protected:
@@ -186,7 +183,7 @@ class EventDD : public Event {
   virtual ~EventDD() {}
 
   virtual bool awaitEventCompletion();
-  virtual bool ready(eventType type);
+  virtual bool ready();
   virtual int64_t time(bool getStartTs) const;
 };
 
@@ -224,7 +221,8 @@ class IPCEvent : public Event {
   hipError_t enqueueStreamWaitCommand(hipStream_t stream, amd::Command* command);
   hipError_t streamWait(hipStream_t stream, uint flags);
 
-  hipError_t recordCommand(amd::Command*& command, amd::HostQueue* queue, uint32_t flags = 0);
+  hipError_t recordCommand(amd::Command*& command, amd::HostQueue* queue,
+                           uint32_t flags = 0, bool batch_flush = true) override;
   hipError_t enqueueRecordCommand(hipStream_t stream, amd::Command* command, bool record);
 };
 

@@ -28,6 +28,10 @@ release(int, AMD_LOG_LEVEL, 0,                                                \
         "The default log level")                                              \
 release(uint, AMD_LOG_MASK, 0X7FFFFFFF,                                       \
         "The mask to enable specific kinds of logs")                          \
+release(cstring, AMD_LOG_LEVEL_FILE, "",                                      \
+        "Set output file for AMD_LOG_LEVEL, Default is stderr")               \
+release(size_t, AMD_LOG_LEVEL_SIZE, 2048,                                     \
+        "The max size of AMD_LOG generated in MB if printed to a file")       \
 debug(uint, DEBUG_GPU_FLAGS, 0,                                               \
         "The debug options for GPU device")                                   \
 release(size_t, CQ_THREAD_STACK_SIZE, 256*Ki, /* @todo: that much! */         \
@@ -81,7 +85,7 @@ release(size_t, GPU_PINNED_MIN_XFER_SIZE, 128,                                \
 release(size_t, GPU_RESOURCE_CACHE_SIZE, 64,                                  \
         "The resource cache size in MB")                                      \
 release(size_t, GPU_MAX_SUBALLOC_SIZE, 4096,                                  \
-        "The maximum size accepted for suballocaitons in KB")                 \
+        "The maximum size accepted for suballocations in KB")                 \
 release(size_t, GPU_NUM_MEM_DEPENDENCY, 256,                                  \
         "Number of memory objects for dependency tracking")                   \
 release(size_t, GPU_XFER_BUFFER_SIZE, 0,                                      \
@@ -101,7 +105,7 @@ release(bool, GPU_USE_DEVICE_QUEUE, false,                                    \
 release(bool, AMD_THREAD_TRACE_ENABLE, true,                                  \
         "Enable thread trace extension")                                      \
 release(uint, OPENCL_VERSION, 200,                                            \
-        "Force GPU opencl verison")                                           \
+        "Force GPU opencl version")                                           \
 release(bool, HSA_LOCAL_MEMORY_ENABLE, true,                                  \
         "Enable HSA device local memory usage")                               \
 release(uint, HSA_KERNARG_POOL_SIZE, 1024 * 1024,                             \
@@ -182,7 +186,7 @@ release(bool, AMD_DIRECT_DISPATCH, false,                                     \
 release(uint, HIP_HIDDEN_FREE_MEM, 0,                                         \
         "Reserve free mem reporting in Mb"                                    \
         "0 = Disable")                                                        \
-release(size_t, GPU_FORCE_BLIT_COPY_SIZE, 0,                                  \
+release(size_t, GPU_FORCE_BLIT_COPY_SIZE, 16,                                 \
         "Use Blit until this size(in KB) for copies")                         \
 release(uint, ROC_ACTIVE_WAIT_TIMEOUT, 0,                                     \
         "Forces active wait of GPU interrup for the timeout(us)")             \
@@ -207,8 +211,6 @@ release(bool, PAL_EMBED_KERNEL_MD, false,                                     \
 release(cstring, ROC_GLOBAL_CU_MASK, "",                                      \
         "Sets a global CU mask (entered as hex value) for all queues,"        \
         "Each active bit represents using one CU (e.g., 0xf enables only 4 CUs)") \
-release(cstring, AMD_LOG_LEVEL_FILE, "",                                      \
-        "Set output file for AMD_LOG_LEVEL, Default is stderr")               \
 release(size_t, PAL_PREPINNED_MEMORY_SIZE, 64,                                \
         "Size in KBytes of prepinned memory")                                 \
 release(bool, AMD_CPU_AFFINITY, false,                                        \
@@ -255,12 +257,21 @@ release(uint, DEBUG_HIP_FORCE_GRAPH_QUEUES, 4,                                \
         "Forces the number of streams for the graph parallel execution")      \
 release(bool, HIP_ALWAYS_USE_NEW_COMGR_UNBUNDLING_ACTION, false,              \
         "Force to always use new comgr unbundling action")                    \
+release(uint, DEBUG_HIP_BLOCK_SYNC, 50,                                       \
+        "Blocks synchronization on CPU until the callback processing is done")\
+release(uint, DEBUG_CLR_MAX_BATCH_SIZE, 1000,                                 \
+        "Forces the callback to clean-up CPU submission queue")               \
+release(bool, DEBUG_CLR_SYSMEM_POOL, false,                                   \
+        "Use sysmem pool implementation in runtime for amd commands")         \
 release(bool, DEBUG_HIP_KERNARG_COPY_OPT, true,                               \
         "Enable/Disable multiple kern arg copies")                            \
 release(bool, DEBUG_CLR_USE_STDMUTEX_IN_AMD_MONITOR, false,                   \
-        "Use std::mutex in amd::monotor")                                     \
+        "Use std::mutex in amd::monitor")                                     \
 release(bool, DEBUG_CLR_KERNARG_HDP_FLUSH_WA, false,                          \
         "Toggle kernel arg copy workaround")                                  \
+release(uint, DEBUG_HIP_7_PREVIEW, 0,                                         \
+        "Enables specific backward incompatible changes support before 7.0,"  \
+        "using the mask. By default the changes are disabled and is set to 0")\
 
 namespace amd {
 

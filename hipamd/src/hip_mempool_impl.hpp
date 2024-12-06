@@ -199,7 +199,7 @@ class MemoryPool : public amd::ReferenceCountedObject {
   MemoryPool(hip::Device* device, const hipMemPoolProps* props = nullptr, bool phys_mem = false)
       : busy_heap_(device),
         free_heap_(device),
-        lock_pool_ops_("Pool operations", true),
+        lock_pool_ops_(true), /* Pool operations */
         device_(device),
         shared_(nullptr),
         max_total_size_(0) {
@@ -261,6 +261,7 @@ class MemoryPool : public amd::ReferenceCountedObject {
 
   /// Add a safe stream for quick looks-ups if event dependencies option is enabled
   void AddSafeStream(Stream* event_stream, Stream* wait_stream) {
+    amd::ScopedLock lock(lock_pool_ops_);
     if (EventDependencies()) {
       free_heap_.AddSafeStream(event_stream, wait_stream);
     }

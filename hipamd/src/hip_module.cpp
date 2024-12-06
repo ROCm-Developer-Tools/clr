@@ -186,14 +186,21 @@ hipError_t hipFuncSetAttribute(const void* func, hipFuncAttribute attr, int valu
     HIP_RETURN(hipErrorInvalidValue);
   }
 
-  hipFunction_t h_func;
-  HIP_RETURN_ONFAIL(PlatformState::instance().getStatFunc(&h_func, func, ihipGetDevice()));
+  hipFunction_t h_func = nullptr;
+  const hip::DeviceFunc* function = nullptr;
 
-  hip::DeviceFunc* function = hip::DeviceFunc::asFunction(h_func);
-  if (function == nullptr) {
-    HIP_RETURN(hipErrorInvalidHandle);
+  hipError_t err = PlatformState::instance().getStatFunc(&h_func, func, ihipGetDevice());
+  if (h_func == nullptr) {
+    if (PlatformState::instance().isValidDynFunc((func))) {
+      function = reinterpret_cast<const hip::DeviceFunc*>(func);
+    } else {
+      HIP_RETURN(hipErrorInvalidDeviceFunction);
+    }
+  } else {
+    function = reinterpret_cast<const hip::DeviceFunc*>(h_func);
   }
-  amd::Kernel* kernel = reinterpret_cast<hip::DeviceFunc*>(function)->kernel();
+
+  amd::Kernel* kernel = function->kernel();
 
   if (kernel == nullptr) {
     HIP_RETURN(hipErrorInvalidDeviceFunction);
@@ -203,7 +210,7 @@ hipError_t hipFuncSetAttribute(const void* func, hipFuncAttribute attr, int valu
                   *(hip::getCurrentDevice()->devices()[0])));
 
   if (attr == hipFuncAttributeMaxDynamicSharedMemorySize) {
-    if ((value < 0) || (value > (d_kernel->workGroupInfo()->availableLDSSize_ - 
+    if ((value < 0) || (value > (d_kernel->workGroupInfo()->availableLDSSize_ -
                                  d_kernel->workGroupInfo()->localMemSize_))) {
       HIP_RETURN(hipErrorInvalidValue);
     }
@@ -222,7 +229,12 @@ hipError_t hipFuncSetAttribute(const void* func, hipFuncAttribute attr, int valu
 hipError_t hipFuncSetCacheConfig(const void* func, hipFuncCache_t cacheConfig) {
   HIP_INIT_API(hipFuncSetCacheConfig, cacheConfig);
 
-  // No way to set cache config yet.
+  if (func == nullptr) { HIP_RETURN(hipErrorInvalidDeviceFunction); }
+  if (cacheConfig != hipFuncCachePreferNone && cacheConfig != hipFuncCachePreferShared &&
+      cacheConfig != hipFuncCachePreferL1 && cacheConfig != hipFuncCachePreferEqual) {
+    HIP_RETURN(hipErrorInvalidValue);
+  }
+  // No way to set cache config yet
 
   HIP_RETURN(hipSuccess);
 }
@@ -230,7 +242,13 @@ hipError_t hipFuncSetCacheConfig(const void* func, hipFuncCache_t cacheConfig) {
 hipError_t hipFuncSetSharedMemConfig(const void* func, hipSharedMemConfig config) {
   HIP_INIT_API(hipFuncSetSharedMemConfig, func, config);
 
-  // No way to set Shared Memory config function yet.
+  if (func == nullptr) { HIP_RETURN(hipErrorInvalidDeviceFunction); }
+  if (config != hipSharedMemBankSizeDefault && config != hipSharedMemBankSizeFourByte &&
+      config != hipSharedMemBankSizeEightByte) {
+    HIP_RETURN(hipErrorInvalidValue);
+  }
+
+  // No way to set shared memory config yet
 
   HIP_RETURN(hipSuccess);
 }
@@ -409,8 +427,7 @@ hipError_t ihipModuleLaunchKernel(hipFunction_t f, uint32_t globalWorkSizeX,
   }
   hip::DeviceFunc* function = hip::DeviceFunc::asFunction(f);
   amd::Kernel* kernel = function->kernel();
-
-  amd::ScopedLock lock (DEBUG_HIP_KERNARG_COPY_OPT ? &function->dflock_ : nullptr);
+  amd::ScopedLock lock (DEBUG_HIP_KERNARG_COPY_OPT ? nullptr : &function->dflock_);
 
   hipError_t status = ihipLaunchKernel_validate(
       f, globalWorkSizeX, globalWorkSizeY, globalWorkSizeZ, blockDimX, blockDimY, blockDimZ,
@@ -723,7 +740,7 @@ hipError_t hipLaunchKernel_common(const void* hostFunction, dim3 gridDim, dim3 b
 hipError_t hipLaunchKernel(const void* hostFunction, dim3 gridDim, dim3 blockDim,
                                       void** args, size_t sharedMemBytes, hipStream_t stream) {
   HIP_INIT_API(hipLaunchKernel, hostFunction, gridDim, blockDim, args, sharedMemBytes, stream);
-  HIP_RETURN(hipLaunchKernel_common(hostFunction, gridDim, blockDim, args, sharedMemBytes, stream));
+  HIP_RETURN_DURATION(hipLaunchKernel_common(hostFunction, gridDim, blockDim, args, sharedMemBytes, stream));
 }
 
 hipError_t hipLaunchKernel_spt(const void* hostFunction, dim3 gridDim, dim3 blockDim,
@@ -755,6 +772,9 @@ hipError_t hipLaunchCooperativeKernel_common(const void* f, dim3 gridDim, dim3 b
   if (!hip::isValid(hStream)) {
     return hipErrorContextIsDestroyed;
   }
+
+  STREAM_CAPTURE(hipLaunchCooperativeKernel, hStream, f, gridDim, blockDim, kernelParams,
+                 sharedMemBytes);
 
   if (f == nullptr) {
     return hipErrorInvalidDeviceFunction;
@@ -807,7 +827,7 @@ hipError_t hipLaunchCooperativeKernel_spt(const void* f, dim3 gridDim, dim3 bloc
 
 hipError_t ihipLaunchCooperativeKernelMultiDevice(hipLaunchParams* launchParamsList, int numDevices,
                                                   unsigned int flags, uint32_t extFlags) {
-  if (launchParamsList == nullptr) {
+  if (launchParamsList == nullptr || numDevices > g_devices.size()) {
     return hipErrorInvalidValue;
   }
 

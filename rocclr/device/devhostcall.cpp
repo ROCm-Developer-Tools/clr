@@ -334,15 +334,14 @@ void HostcallListener::consumePackets() {
 }
 
 void HostcallListener::terminate() {
-  if (!amd::Os::isThreadAlive(thread_)) {
-    return;
-  }
-  kHostThreadActive.state = Init::State::kExit;
-  doorbell_->Reset(SIGNAL_DONE);
+  if (thread_.state() >= Thread::FINISHED || amd::Os::isThreadAlive(thread_)) {
+    kHostThreadActive.state = Init::State::kExit;
+    doorbell_->Reset(SIGNAL_DONE);
 
-  // FIXME_lmoriche: fix termination handshake
-  while (thread_.state() < Thread::FINISHED) {
-    amd::Os::yield();
+    // FIXME_lmoriche: fix termination handshake
+    while (thread_.state() < Thread::FINISHED) {
+      amd::Os::yield();
+    }
   }
 
 #if defined(__clang__)
@@ -433,7 +432,7 @@ bool enableHostcalls(const amd::Device &dev, void* bfr, uint32_t numPackets) {
 // For ROCr, create only one signal across all devices (inside hostcallListener->initSignal(dev)) whose pointer is stored in every hostcall buffer
 #if defined(WITH_PAL_DEVICE)
   else if (!hostcallListener->initDevice(dev)) {
-    ClPrint(amd::LOG_INFO, (amd::LOG_INIT | amd::LOG_QUEUE | amd::LOG_RESOURCE),
+    ClPrint(amd::LOG_ERROR, (amd::LOG_INIT | amd::LOG_QUEUE | amd::LOG_RESOURCE),
             "failed to initialize device for hostcall");
     return false;
   }

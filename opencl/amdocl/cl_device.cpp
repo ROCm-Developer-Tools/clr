@@ -22,7 +22,7 @@
 #include "vdi_common.hpp"
 #include "device/device.hpp"
 #include "platform/runtime.hpp"
-#include "utils/versions.hpp"
+#include "rocclr/utils/versions.hpp"
 #include "os/os.hpp"
 #include "cl_semaphore_amd.h"
 
@@ -446,6 +446,14 @@ RUNTIME_ENTRY(cl_int, clGetDeviceInfo,
         return CL_SUCCESS;
       }
       CASE(CL_DEVICE_PCIE_ID_AMD, pcieDeviceId_);
+#define CL_DEVICE_NUMERIC_VERSION 0x105E
+      case CL_DEVICE_NUMERIC_VERSION: {
+        std::string driverVersion = as_amd(device)->info().driverVersion_;
+        std::string drvVersion(driverVersion.c_str());
+        drvVersion = drvVersion.substr(0, 4);  // calVersion.find_first_of("(") + 4);
+        cl_uint numVersion = atoi(drvVersion.c_str());
+        return amd::clGetInfo(numVersion, param_value_size, param_value, param_value_size_ret);
+      }
       default:
         break;
     }

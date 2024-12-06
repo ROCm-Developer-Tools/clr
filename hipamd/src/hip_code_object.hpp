@@ -52,7 +52,7 @@ class CodeObject {
   // return code_objs{binary_ptr, binary_size}, which could be used to determine foffset
   static hipError_t ExtractCodeObjectFromFile(amd::Os::FileDesc fdesc, size_t fsize,
                     const void ** image, const std::vector<std::string>& device_names,
-                    std::vector<std::pair<const void*, size_t>>& code_objs);
+                    std::vector<std::pair<const void*, size_t>>& code_objs, size_t foffset);
 
   // Given an ptr to memory, extracts to code object for corresponding devices,
   // returns code_objs{binary_ptr, binary_size} and uniform resource indicator
@@ -64,6 +64,12 @@ class CodeObject {
   static uint64_t ElfSize(const void* emi);
 
   static bool IsClangOffloadMagicBundle(const void* data, bool& isCompressed);
+
+  static  unsigned int getGenericVersion(const void* image);
+
+  static bool isGenericTarget(const void* image);
+
+  static bool containGenericTarget(const void *data);
 
   // Return size of fat bin
   static size_t getFatbinSize(const void* data, const bool isCompressed = false);
@@ -103,7 +109,8 @@ private:
 
 //Dynamic Code Object
 class DynCO : public CodeObject {
-  amd::Monitor dclock_{"Guards Dynamic Code object", true};
+  // Guards Dynamic Code object
+  amd::Monitor dclock_{true};
 
 public:
   DynCO() : device_id_(ihipGetDevice()), fb_info_(nullptr) {}
@@ -115,6 +122,7 @@ public:
 
   //Gets GlobalVar/Functions from a dynamically loaded code object
   hipError_t getDynFunc(hipFunction_t* hfunc, std::string func_name);
+  bool isValidDynFunc(const void* hfunc);
   hipError_t getDeviceVar(DeviceVar** dvar, std::string var_name);
 
   hipError_t getManagedVarPointer(std::string name, void** pointer, size_t* size_ptr) const {
@@ -151,13 +159,14 @@ private:
 
 //Static Code Object
 class StatCO: public CodeObject {
-  amd::Monitor sclock_{"Guards Static Code object", true};
+  // Guards Static Code object
+  amd::Monitor sclock_{true};
 public:
   StatCO();
   virtual ~StatCO();
 
   //Add/Remove/Digest Fat Binaries passed to us from "__hipRegisterFatBinary"
-  FatBinaryInfo** addFatBinary(const void* data, bool initialized);
+  FatBinaryInfo** addFatBinary(const void* data, bool initialized, bool& success);
   hipError_t removeFatBinary(FatBinaryInfo** module);
   hipError_t digestFatBinary(const void* data, FatBinaryInfo*& programs);
 

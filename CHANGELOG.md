@@ -2,9 +2,19 @@
 
 Full documentation for HIP is available at [rocm.docs.amd.com](https://rocm.docs.amd.com/projects/HIP/en/latest/index.html)
 
+## HIP 6.4 (For ROCm 6.4)
+
+### Changed
+* Added new environment variable
+    - `DEBUG_HIP_7_PREVIEW` This is used for enabling the backward incompatible changes before the next major ROCm release 7.0. By default this is set to 0. Users can set this variable to 0x1, to match the behavior of hipGetLastError with its corresponding CUDA API.
+* New HIP APIs
+  - The `_sync()` version of crosslane builtins such as `shfl_sync()`,
+    `__all_sync()` and `__any_sync()`, are enabled by default. These can be
+    disabled by setting the preprocessor macro `HIP_DISABLE_WARP_SYNC_BUILTINS`.
+
 ## HIP 6.3 for ROCm 6.3
 
-### Changes
+### Changed
 
 * Un-deprecated HIP APIs
     - `hipHostAlloc`
@@ -21,13 +31,13 @@ Full documentation for HIP is available at [rocm.docs.amd.com](https://rocm.docs
     - `hipDrvGraphExecMemsetNodeSetParams`  sets the parameters for a memset node in the given graphExec.
     - `hipExtHostAlloc` preserves the functionality of `hipHostMalloc`.
 
-### Optimizations
-
 ### Resolved issues
 
-### Known issues
 
-### Upcoming changes
+- The `_sync()` version of crosslane builtins such as `shfl_sync()`,
+  `__all_sync()` and `__any_sync()`, continue to be hidden behind the
+  preprocessor macro `HIP_ENABLE_WARP_SYNC_BUILTINS`, and will be enabled
+  unconditionally in the next ROCm release.
 
 ## HIP 6.2.41134 for ROCm 6.2.1
 
@@ -36,9 +46,6 @@ Full documentation for HIP is available at [rocm.docs.amd.com](https://rocm.docs
 * Soft hang when use AMD_SERIALIZE_KERNEL.
 * Memory leak in hipIpcCloseMemHandle.
 
-### Added
-- Added new HIP APIs
-  - `hipDeviceGetTexture1DLinearMaxWidth` returns the maximum number of elements allocatable in a 1D linear texture for a given element size.
 
 ## HIP 6.2 (For ROCm 6.2)
 
@@ -68,13 +75,12 @@ Full documentation for HIP is available at [rocm.docs.amd.com](https://rocm.docs
 - Added initial support for 8-bit floating point datatype in `amd_hip_fp8.h`. These are accessible via `#include <hip/hip_fp8.h>`
 - Add UUID support for environment variable `HIP_VISIBLE_DEVICES`.
 
-### Fixed
+### Resolved issues
 - Stream capture support in HIP graph.
 Prohibited and unhandled operations are fixed during stream capture in HIP runtime.
 - Fix undefined symbol error for hipTexRefGetArray & hipTexRefGetBorderColor.
 
 ## HIP 6.1 (For ROCm 6.1)
-### Optimizations
 
 ### Added
 - New environment variable HIP_LAUNCH_BLOCKING
@@ -85,7 +91,7 @@ The default value is 0 (disable), kernel will execute normally as defined in the
 ### Changed
 - HIPRTC now assumes WGP mode for gfx10+. CU mode can be enabled by passing `-mcumode` to the compile options from `hiprtcCompileProgram`.
 
-### Fixed
+### Resolved issues
 - HIP complex vector type multiplication and division operations.
 On AMD platform, some duplicated complex operators are removed to avoid compilation failures.
 In HIP, hipFloatComplex and hipDoubleComplex are defined as complex data types,
@@ -97,11 +103,7 @@ Any application uses complex multiplication and division operations, need to rep
 
     Note: These complex operations are equivalent to corresponding types/functions on NVIDIA platform.
 
-### Known Issues
-
 ## HIP 6.0 (For ROCm 6.0)
-
-### Optimizations
 
 ### Added
 - Addition of hipExtGetLastError
@@ -156,7 +158,7 @@ This header exists alongside the older bfloat16 header in`amd_hip_bfloat16.h` wh
     - hipGraphicsGLRegisterImage
 - With ROCm 6.0, the HIP version is 6.0. As the HIP runtime binary suffix is updated in every major ROCm release, in ROCm 6.0, the new filename is libamdhip64.so.6. Furthermore, in ROCm 6.0 release, the libamdhip64.so.5 binary from ROCm 5.7 is made available to maintain binary backward compatibility with ROCm 5.x.
 
-### Changes Impacting Backward Compatibility
+### Changed Impacting Backward Compatibility
 - Data types for members in HIP_MEMCPY3D structure are changed from "unsigned int" to "size_t".
 - The value of the flag hipIpcMemLazyEnablePeerAccess is changed to “0x01”, which was previously defined as “0”.
 - Some device property attributes are not currently support in HIP runtime, in order to maintain consistency, the following related enumeration names are changed in hipDeviceAttribute_t
@@ -169,13 +171,7 @@ This header exists alongside the older bfloat16 header in`amd_hip_bfloat16.h` wh
 - hipArray_t replaces hipArray*, as the pointer to array.
     - This allows hipMemcpyAtoH and hipMemcpyHtoA to have the correct array type which is equivalent to coresponding CUDA driver APIs.
 
-### Fixed
-- Kernel launch maximum dimension validation is added specifically on gridY and gridZ in the HIP API hipModule-LaunchKernel. As a result,when hipGetDeviceAttribute is called for the value of hipDeviceAttributeMaxGrid-Dim, the behavior on the AMD platform is equivalent to NVIDIA.
-- The HIP stream synchronisation behaviour is changed in internal stream functions, in which a flag "wait" is added and set when the current stream is null pointer while executing stream synchronisation on other explicitly created streams. This change avoids blocking of execution on null/default stream.
-The change won't affect usage of applications, and makes them behave the same on the AMD platform as NVIDIA.
-- Error handling behavior on unsupported GPU is fixed, HIP runtime will log out error message, instead of creating signal abortion error which is invisible to developers but continued kernel execution process. This is for the case when developers compile any application via hipcc, setting the option --offload-arch with GPU ID which is different from the one on the system.
-
-### Deprecated And Removed
+### Removed
 - Deprecated Heterogeneous Compute (HCC) symbols and flags are removed from the HIP source code, including,
     - Build options on obsolete HCC_OPTIONS was removed from cmake.
     - Micro definitions are removed.
@@ -196,6 +192,12 @@ The change won't affect usage of applications, and makes them behave the same on
 - Deprecated HIT based tests are removed from HIP project
 - Catch tests are available [hip-tests] (https://github.com/ROCm/hip-tests) project
 
+### Resolved issues
+- Kernel launch maximum dimension validation is added specifically on gridY and gridZ in the HIP API hipModule-LaunchKernel. As a result,when hipGetDeviceAttribute is called for the value of hipDeviceAttributeMaxGrid-Dim, the behavior on the AMD platform is equivalent to NVIDIA.
+- The HIP stream synchronisation behaviour is changed in internal stream functions, in which a flag "wait" is added and set when the current stream is null pointer while executing stream synchronisation on other explicitly created streams. This change avoids blocking of execution on null/default stream.
+The change won't affect usage of applications, and makes them behave the same on the AMD platform as NVIDIA.
+- Error handling behavior on unsupported GPU is fixed, HIP runtime will log out error message, instead of creating signal abortion error which is invisible to developers but continued kernel execution process. This is for the case when developers compile any application via hipcc, setting the option --offload-arch with GPU ID which is different from the one on the system.
+
 ### Known Issues
 - Dynamically loaded HIP runtime library references incorrect version of hipDeviceGetProperties and hipChooseDevice APIs
 
@@ -205,12 +207,10 @@ As a workaround, while compiling with ROCm 6.0, use the string "hipDeviceGetProp
 
 ## HIP 5.7.1 (For ROCm 5.7.1)
 
-### Fixed
+### Resolved issues
 - hipPointerGetAttributes API returns the correct HIP memory type as hipMemoryTypeManaged for managed memory.
 
 ## HIP 5.7 (For ROCm 5.7)
-
-### Optimizations
 
 ### Added
 - Added meta_group_size/rank for getting the number of tiles and rank of a tile in the partition
@@ -228,15 +228,11 @@ As a workaround, while compiling with ROCm 6.0, use the string "hipDeviceGetProp
 
     - hipMipmappedArrayGetLevel for getting a mipmapped array on a mipmapped level
 
-### Changed
-
-### Fixed
-
 ### Known Issues
 - HIP memory type enum values currently don't support equivalent value to cudaMemoryTypeUnregistered, due to HIP functionality backward compatibility.
 - HIP API hipPointerGetAttributes could return invalid value in case the input memory pointer was not allocated through any HIP API on device or host.
 
-### Upcoming changes in ROCm 6.0 release
+### Upcoming changes
 - Removal of gcnarch from hipDeviceProp_t structure
 - Addition of new fields in hipDeviceProp_t structure
   - maxTexture1D
@@ -262,16 +258,13 @@ As a workaround, while compiling with ROCm 6.0, use the string "hipDeviceGetProp
 - Remove hiparray* and make it opaque with hipArray_t
 
 ## HIP 5.6.1 (For ROCm 5.6.1)
-### Fixed
+
+### Resolved issues
 - Enabled xnack+ check in HIP catch2 tests hang while tests execution
 - Memory leak when code object files are loaded/unloaded via hipModuleLoad/hipModuleUnload APIs
-- Fixed a crash happening while using hipGraphAddMemFreeNode
+- Resolved an issue of crash while using hipGraphAddMemFreeNode
 
 ## HIP 5.6 (For ROCm 5.6)
-
-### Optimizations
-- Consolidation of hipamd, rocclr and OpenCL projects in clr
-- Optimized lock for graph global capture mode
 
 ### Added
 - Added hipRTC support for amd_hip_fp16
@@ -287,7 +280,11 @@ As a workaround, while compiling with ROCm 6.0, use the string "hipDeviceGetProp
 - Consolidation of hipamd, ROCclr, and OpenCL repositories into a single repository called clr. Instructions are updated to build HIP from sources in the HIP Installation guide
 - Removed hipBusBandwidth and hipCommander samples from hip-tests
 
-### Fixed
+### Optimized
+- Consolidation of hipamd, rocclr and OpenCL projects in clr
+- Optimized lock for graph global capture mode
+
+### Resolved issues
 - Fixed regression in hipMemCpyParam3D when offset is applied
 
 ### Known Issues
@@ -296,7 +293,7 @@ As a workaround, while compiling with ROCm 6.0, use the string "hipDeviceGetProp
 - hipSetDevice and hipSetDeviceFlags APIs return hipErrorInvalidDevice instead of hipErrorNoDevice, on a system without GPU
 - Known memory leak when code object files are loaded/unloaded via hipModuleLoad/hipModuleUnload APIs. Issue will be fixed in future release
 
-### Upcoming changes in future release
+### Upcoming changes
 - Removal of gcnarch from hipDeviceProp_t structure
 - Addition of new fields in hipDeviceProp_t structure
   - maxTexture1D

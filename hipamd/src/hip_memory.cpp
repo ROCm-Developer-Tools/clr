@@ -28,7 +28,8 @@
 #include "platform/external_memory.hpp"
 namespace hip {
 
-amd::Monitor hipArraySetLock{"Guards global hipArray set"};
+// Guards global hipArray set
+amd::Monitor hipArraySetLock{};
 std::unordered_set<hipArray*> hipArraySet;
 
 // ================================================================================================
@@ -40,6 +41,16 @@ amd::Memory* getMemoryObject(const void* ptr, size_t& offset, size_t size) {
         ptr, offset, size);
   }
   return memObj;
+}
+
+hipMemoryType getMemoryType(const amd::Memory* memory) {
+  if (memory == nullptr) {
+    return hipMemoryTypeHost;
+  }
+
+  return ((CL_MEM_SVM_FINE_GRAIN_BUFFER | CL_MEM_USE_HOST_PTR) & memory->getMemFlags())
+      ? hipMemoryTypeHost
+      : hipMemoryTypeDevice;
 }
 
 // ================================================================================================
@@ -313,8 +324,11 @@ hipError_t ihipMalloc(void** ptr, size_t sizeBytes, unsigned int flags)
   const auto& dev_info = amdContext->devices()[0]->info();
   hip::getCurrentDevice()->SetActiveStatus();
 
-  if ((!useHostDevice && (dev_info.maxMemAllocSize_ < sizeBytes)) ||
-      (useHostDevice && (dev_info.maxPhysicalMemAllocSize_ < sizeBytes))) {
+  if (dev_info.maxPhysicalMemAllocSize_ < sizeBytes) {
+    return hipErrorOutOfMemory;
+  }
+  // PAL allocates from system memory if needed
+  if (IS_LINUX && !useHostDevice && (dev_info.maxMemAllocSize_ < sizeBytes)) {
     return hipErrorOutOfMemory;
   }
 
@@ -425,15 +439,15 @@ hipError_t ihipMemcpy_validate(void* dst, const void* src, size_t sizeBytes,
       return hipErrorUnknown;
     }
 
-    // Size validation
-    if (sizeBytes > (srcMemory->getSize() - sOffset)) {
-      return hipErrorInvalidValue;
-    }
-
     // If the mem object is a VMM sub buffer (subbuffer has parent set),
     // then use parent's size for validation.
     if (srcMemory->parent() && (srcMemory->getMemFlags() & CL_MEM_VA_RANGE_AMD)) {
       srcMemory = srcMemory->parent();
+    }
+
+    // Size validation
+    if (sizeBytes > (srcMemory->getSize() - sOffset)) {
+      return hipErrorInvalidValue;
     }
   }
 
@@ -443,15 +457,15 @@ hipError_t ihipMemcpy_validate(void* dst, const void* src, size_t sizeBytes,
       return hipErrorUnknown;
     }
 
-    // Size validation
-    if (sizeBytes > (dstMemory->getSize() - dOffset)) {
-      return hipErrorInvalidValue;
-    }
-
     // If the mem object is a VMM sub buffer (subbuffer has parent set),
     // then use parent's size for validation.
     if (dstMemory->parent() && (dstMemory->getMemFlags() & CL_MEM_VA_RANGE_AMD)) {
       dstMemory = dstMemory->parent();
+    }
+
+    // Size validation
+    if (sizeBytes > (dstMemory->getSize() - dOffset)) {
+      return hipErrorInvalidValue;
     }
   }
 
@@ -460,6 +474,35 @@ hipError_t ihipMemcpy_validate(void* dst, const void* src, size_t sizeBytes,
     return hipErrorInvalidValue;
   }
   return hipSuccess;
+}
+
+hip::MemcpyType ihipGetMemcpyType(const void* src, void* dst, hipMemcpyKind kind) {
+  size_t sOffset = 0;
+  amd::Memory* srcMemory = getMemoryObject(src, sOffset);
+  size_t dOffset = 0;
+  amd::Memory* dstMemory = getMemoryObject(dst, dOffset);
+  hip::MemcpyType type;
+  if(srcMemory == nullptr && dstMemory == nullptr) {
+    type = hipHostToHost;
+  } else if ((srcMemory == nullptr) && (dstMemory != nullptr)) {
+    type = hipWriteBuffer;
+  } else if ((srcMemory != nullptr) && (dstMemory == nullptr)) {
+    type = hipReadBuffer;
+  } else if ((srcMemory != nullptr) && (dstMemory != nullptr)) {
+    // Check if the queue device doesn't match the device on any memory object.
+    // And any of them are not host allocation.
+    // Hence it's a P2P transfer, because the app has requested access to another GPU
+    if ((srcMemory->GetDeviceById() != dstMemory->GetDeviceById()) &&
+        ((srcMemory->getContext().devices().size() == 1) &&
+         (dstMemory->getContext().devices().size() == 1))) {
+      type = hipCopyBufferP2P;
+    } else if( kind == hipMemcpyDeviceToDeviceNoCU) {
+      type = hipCopyBufferSDMA;
+    } else {
+      type = hipCopyBuffer;
+    }
+  }
+  return type;
 }
 
 // ================================================================================================
@@ -472,37 +515,37 @@ hipError_t ihipMemcpyCommand(amd::Command*& command, void* dst, const void* src,
   amd::Memory* dstMemory = getMemoryObject(dst, dOffset);
   amd::Device* queueDevice = &stream.device();
   amd::CopyMetadata copyMetadata(isAsync, amd::CopyMetadata::CopyEnginePreference::NONE);
-  if ((srcMemory == nullptr) && (dstMemory != nullptr)) {
-    hip::Stream* pStream = &stream;
-    if (queueDevice != dstMemory->GetDeviceById()) {
-      pStream = hip::getNullStream(dstMemory->GetDeviceById()->context());
-      amd::Command* cmd = stream.getLastQueuedCommand(true);
-      if (cmd != nullptr) {
-        waitList.push_back(cmd);
+  hip::MemcpyType type = ihipGetMemcpyType(src, dst, kind);
+  hip::Stream* pStream = &stream;
+  switch (type) {
+    case hipWriteBuffer:
+      if (queueDevice != dstMemory->GetDeviceById()) {
+        pStream = hip::getNullStream(dstMemory->GetDeviceById()->context());
+        amd::Command* cmd = stream.getLastQueuedCommand(true);
+        if (cmd != nullptr) {
+          waitList.push_back(cmd);
+        }
       }
-    }
-    command = new amd::WriteMemoryCommand(*pStream, CL_COMMAND_WRITE_BUFFER, waitList,
-              *dstMemory->asBuffer(), dOffset, sizeBytes, src, 0, 0, copyMetadata);
-  } else if ((srcMemory != nullptr) && (dstMemory == nullptr)) {
-    hip::Stream* pStream = &stream;
-    if (queueDevice != srcMemory->GetDeviceById()) {
-      pStream = hip::getNullStream(srcMemory->GetDeviceById()->context());
-      amd::Command* cmd = stream.getLastQueuedCommand(true);
-      if (cmd != nullptr) {
-        waitList.push_back(cmd);
+      command = new amd::WriteMemoryCommand(*pStream, CL_COMMAND_WRITE_BUFFER, waitList,
+                                            *dstMemory->asBuffer(), dOffset, sizeBytes, src, 0, 0,
+                                            copyMetadata);
+      break;
+    case hipReadBuffer:
+      if (queueDevice != srcMemory->GetDeviceById()) {
+        pStream = hip::getNullStream(srcMemory->GetDeviceById()->context());
+        amd::Command* cmd = stream.getLastQueuedCommand(true);
+        if (cmd != nullptr) {
+          waitList.push_back(cmd);
+        }
       }
-    }
-    command = new amd::ReadMemoryCommand(*pStream, CL_COMMAND_READ_BUFFER, waitList,
-              *srcMemory->asBuffer(), sOffset, sizeBytes, dst, 0, 0, copyMetadata);
-  } else if ((srcMemory != nullptr) && (dstMemory != nullptr)) {
-    // Check if the queue device doesn't match the device on any memory object.
-    // And any of them are not host allocation.
-    // Hence it's a P2P transfer, because the app has requested access to another GPU
-    if ((srcMemory->GetDeviceById() != dstMemory->GetDeviceById()) &&
-        ((srcMemory->getContext().devices().size() == 1) &&
-         (dstMemory->getContext().devices().size() == 1))) {
+      command = new amd::ReadMemoryCommand(*pStream, CL_COMMAND_READ_BUFFER, waitList,
+                                           *srcMemory->asBuffer(), sOffset, sizeBytes, dst, 0, 0,
+                                           copyMetadata);
+      break;
+    case hipCopyBufferP2P:
       command = new amd::CopyMemoryP2PCommand(stream, CL_COMMAND_COPY_BUFFER, waitList,
-          *srcMemory->asBuffer(), *dstMemory->asBuffer(), sOffset, dOffset, sizeBytes);
+                                              *srcMemory->asBuffer(), *dstMemory->asBuffer(),
+                                              sOffset, dOffset, sizeBytes);
       if (command == nullptr) {
         return hipErrorOutOfMemory;
       }
@@ -512,10 +555,12 @@ hipError_t ihipMemcpyCommand(amd::Command*& command, void* dst, const void* src,
         delete command;
         return hipErrorInvalidValue;
       }
-    } else {
-      hip::Stream* pStream = &stream;
+      break;
+    case hipCopyBufferSDMA:
+      copyMetadata.copyEnginePreference_ = amd::CopyMetadata::CopyEnginePreference::SDMA;
+    case hipCopyBuffer:
       if ((srcMemory->GetDeviceById() == dstMemory->GetDeviceById()) &&
-          (queueDevice != srcMemory->GetDeviceById())) {
+          queueDevice != srcMemory->GetDeviceById()) {
         pStream = hip::getNullStream(srcMemory->GetDeviceById()->context());
         amd::Command* cmd = stream.getLastQueuedCommand(true);
         if (cmd != nullptr) {
@@ -530,7 +575,7 @@ hipError_t ihipMemcpyCommand(amd::Command*& command, void* dst, const void* src,
           if (cmd != nullptr) {
             waitList.push_back(cmd);
           }
-        // Scenarios such as HtoD where src is pinned memory
+          // Scenarios such as HtoD where src is pinned memory
         } else if ((queueDevice != dstMemory->GetDeviceById()) &&
                    (srcMemory->getContext().devices().size() != 1)) {
           pStream = hip::getNullStream(dstMemory->GetDeviceById()->context());
@@ -540,14 +585,10 @@ hipError_t ihipMemcpyCommand(amd::Command*& command, void* dst, const void* src,
           }
         }
       }
-
-      copyMetadata.copyEnginePreference_ = (kind == hipMemcpyDeviceToDeviceNoCU) ?
-                                            amd::CopyMetadata::CopyEnginePreference::SDMA :
-                                            amd::CopyMetadata::CopyEnginePreference::NONE;
       command = new amd::CopyMemoryCommand(*pStream, CL_COMMAND_COPY_BUFFER, waitList,
-          *srcMemory->asBuffer(), *dstMemory->asBuffer(), sOffset, dOffset, sizeBytes,
-          copyMetadata);
-    }
+                                           *srcMemory->asBuffer(), *dstMemory->asBuffer(), sOffset,
+                                           dOffset, sizeBytes, copyMetadata);
+      break;
   }
   if (command == nullptr) {
     return hipErrorOutOfMemory;
@@ -557,6 +598,7 @@ hipError_t ihipMemcpyCommand(amd::Command*& command, void* dst, const void* src,
   }
   return hipSuccess;
 }
+
 bool IsHtoHMemcpy(void* dst, const void* src) {
   size_t sOffset = 0;
   amd::Memory* srcMemory = getMemoryObject(src, sOffset);
@@ -593,21 +635,31 @@ hipError_t ihipMemcpy(void* dst, const void* src, size_t sizeBytes, hipMemcpyKin
   amd::Memory* srcMemory = getMemoryObject(src, sOffset);
   size_t dOffset = 0;
   amd::Memory* dstMemory = getMemoryObject(dst, dOffset);
+
+  hipMemoryType srcMemoryType = getMemoryType(srcMemory);
+  hipMemoryType dstMemoryType = getMemoryType(dstMemory);
+
   if (srcMemory == nullptr && dstMemory == nullptr) {
     ihipHtoHMemcpy(dst, src, sizeBytes, stream);
     return hipSuccess;
   } else if (((srcMemory == nullptr) && (dstMemory != nullptr)) ||
              ((srcMemory != nullptr) && (dstMemory == nullptr))) {
-    isHostAsync = false;
+    // Don't wait for unpinned H2D copy if staging is used for copy. If dstMemory is not null, it
+    // can still be a pinned host memory, hence the check on dst memory type.
+    isHostAsync &=
+        ((srcMemory == nullptr) && (dstMemory != nullptr && dstMemoryType == hipMemoryTypeDevice) &&
+         AMD_DIRECT_DISPATCH && (sizeBytes <= stream.device().settings().stagedXferSize_))
+        ? true
+        : false;
   } else if (srcMemory->GetDeviceById() == dstMemory->GetDeviceById()) {
-    hipMemoryType srcMemoryType = ((CL_MEM_SVM_FINE_GRAIN_BUFFER | CL_MEM_USE_HOST_PTR) &
-        srcMemory->getMemFlags())? hipMemoryTypeHost : hipMemoryTypeDevice;
-    hipMemoryType dstMemoryType = ((CL_MEM_SVM_FINE_GRAIN_BUFFER | CL_MEM_USE_HOST_PTR) &
-        dstMemory->getMemFlags())? hipMemoryTypeHost : hipMemoryTypeDevice;
     // Device to Device copies do not need to host side synchronization.
     if ((srcMemoryType == hipMemoryTypeDevice) && (dstMemoryType == hipMemoryTypeDevice) &&
         (!srcMemory->getUserData().sync_mem_ops_ || !dstMemory->getUserData().sync_mem_ops_)) {
       isHostAsync = true;
+    }
+    // Any Host to any Host need host side synchronization.
+    if ((srcMemoryType == hipMemoryTypeHost) && (dstMemoryType == hipMemoryTypeHost)) {
+      isHostAsync = false;
     }
   }
 
@@ -1359,7 +1411,24 @@ hipError_t hipHostAlloc(void** ptr, size_t sizeBytes, unsigned int flags) {
 
   hipError_t status = ihipHostMalloc(ptr, sizeBytes, flags);
   HIP_RETURN_DURATION(status, *ptr);
-};
+}
+
+hipError_t hipMemcpyAsync_common(void* dst, const void* src, size_t sizeBytes,
+                          hipMemcpyKind kind, hipStream_t stream) {
+  STREAM_CAPTURE(hipMemcpyAsync, stream, dst, src, sizeBytes, kind);
+
+  if (static_cast<uint32_t>(kind) > hipMemcpyDefault && kind != hipMemcpyDeviceToDeviceNoCU) {
+    return hipErrorInvalidMemcpyDirection;
+  }
+  hip::Stream* hip_stream = hip::getStream(stream);
+  if (hip_stream == nullptr) {
+    return hipErrorInvalidValue;
+  }
+  if (!hip::isValid(stream)) {
+    return hipErrorContextIsDestroyed;
+  }
+  return ihipMemcpy(dst, src, sizeBytes, kind, *hip_stream, true);
+}
 
 inline hipError_t ihipMemcpySymbol_validate(const void* symbol, size_t sizeBytes,
   size_t offset, size_t &sym_size, hipDeviceptr_t &device_ptr) {
@@ -1461,8 +1530,8 @@ hipError_t hipMemcpyToSymbolAsync_common(const void* symbol, const void* src, si
   if (status != hipSuccess) {
     return status;
   }
-  /* Copy memory from source to destination address */
-  return hipMemcpyAsync(device_ptr, src, sizeBytes, kind, stream);
+
+  return hipMemcpyAsync_common(device_ptr, src, sizeBytes, kind, stream);
 }
 
 hipError_t hipMemcpyToSymbolAsync(const void* symbol, const void* src, size_t sizeBytes,
@@ -1546,23 +1615,6 @@ hipError_t hipMemcpyDtoD(hipDeviceptr_t dstDevice,
     HIP_RETURN(hipErrorInvalidValue);
   }
   HIP_RETURN_DURATION(ihipMemcpy(dstDevice, srcDevice, ByteCount, hipMemcpyDeviceToDevice, *stream));
-}
-
-hipError_t hipMemcpyAsync_common(void* dst, const void* src, size_t sizeBytes,
-                          hipMemcpyKind kind, hipStream_t stream) {
-  STREAM_CAPTURE(hipMemcpyAsync, stream, dst, src, sizeBytes, kind);
-
-  if (static_cast<uint32_t>(kind) > hipMemcpyDefault && kind != hipMemcpyDeviceToDeviceNoCU) {
-    return hipErrorInvalidMemcpyDirection;
-  }
-  hip::Stream* hip_stream = hip::getStream(stream);
-  if (hip_stream == nullptr) {
-    return hipErrorInvalidValue;
-  }
-  if (!hip::isValid(stream)) {
-    return hipErrorContextIsDestroyed;
-  }
-  return ihipMemcpy(dst, src, sizeBytes, kind, *hip_stream, true);
 }
 
 hipError_t hipMemcpyAsync(void* dst, const void* src, size_t sizeBytes,
@@ -1845,19 +1897,66 @@ hipError_t ihipMemcpyDtoDCommand(amd::Command*& command, void* srcDevice, void* 
   if (status != hipSuccess) {
     return status;
   }
+  amd::Command::EventWaitList waitList;
+  amd::CopyMemoryCommand* copyCommand;
+  amd::Device* queueDevice = &stream->device();
   amd::Coord3D srcStart(srcRect.start_, 0, 0);
   amd::Coord3D dstStart(dstRect.start_, 0, 0);
-  amd::CopyMemoryCommand* copyCommand = new amd::CopyMemoryCommand(
-      *stream, CL_COMMAND_COPY_BUFFER_RECT, amd::Command::EventWaitList{}, *srcMemory, *dstMemory,
-      srcStart, dstStart, copyRegion, srcRect, dstRect);
+
+  bool p2pcopy = false;
+  // Check if the queue device doesn't match the device on any memory object.
+  // And any of them are not host allocation.
+  // Hence it's a P2P transfer, because the app has requested access to another GPU
+  if ((srcMemory->GetDeviceById() != dstMemory->GetDeviceById()) &&
+      ((srcMemory->getContext().devices().size() == 1) &&
+      (dstMemory->getContext().devices().size() == 1))) {
+      copyCommand = new amd::CopyMemoryP2PCommand(*stream, CL_COMMAND_COPY_BUFFER_RECT, waitList,
+          *srcMemory, *dstMemory, srcStart, dstStart, copyRegion, srcRect, dstRect);
+      p2pcopy = true;
+  } else {
+      hip::Stream* pStream = stream;
+      if ((srcMemory->GetDeviceById() == dstMemory->GetDeviceById()) &&
+          (queueDevice != srcMemory->GetDeviceById())) {
+        pStream = hip::getNullStream(srcMemory->GetDeviceById()->context());
+        amd::Command* cmd = stream->getLastQueuedCommand(true);
+        if (cmd != nullptr) {
+          waitList.push_back(cmd);
+        }
+      } else if (srcMemory->GetDeviceById() != dstMemory->GetDeviceById()) {
+        // Scenarios such as DtoH where dst is pinned memory
+        if ((queueDevice != srcMemory->GetDeviceById()) &&
+            (dstMemory->getContext().devices().size() != 1)) {
+          pStream = hip::getNullStream(srcMemory->GetDeviceById()->context());
+          amd::Command* cmd = stream->getLastQueuedCommand(true);
+          if (cmd != nullptr) {
+            waitList.push_back(cmd);
+          }
+        // Scenarios such as HtoD where src is pinned memory
+      } else if ((queueDevice != dstMemory->GetDeviceById()) &&
+                   (srcMemory->getContext().devices().size() != 1)) {
+          pStream = hip::getNullStream(dstMemory->GetDeviceById()->context());
+          amd::Command* cmd = stream->getLastQueuedCommand(true);
+          if (cmd != nullptr) {
+            waitList.push_back(cmd);
+          }
+        }
+      }
+      copyCommand = new amd::CopyMemoryCommand( *pStream, CL_COMMAND_COPY_BUFFER_RECT, waitList,
+         *srcMemory, *dstMemory, srcStart, dstStart, copyRegion, srcRect, dstRect);
+  }
 
   if (copyCommand == nullptr) {
     return hipErrorOutOfMemory;
   }
-
-  if (!copyCommand->validatePeerMemory()) {
+  // Make sure runtime has valid memory for the command execution. P2P access
+  // requires page table mapping on the current device to another GPU memory
+  if ((p2pcopy && !static_cast<amd::CopyMemoryP2PCommand*>(copyCommand)->validateMemory()) ||
+      (!p2pcopy && !copyCommand->validatePeerMemory())) {
     delete copyCommand;
     return hipErrorInvalidValue;
+  }
+  if (waitList.size() > 0) {
+    waitList[0]->release();
   }
   command = copyCommand;
   return hipSuccess;
@@ -2092,9 +2191,10 @@ hipError_t ihipMemcpyAtoAValidate(hipArray_t srcArray, hipArray_t dstArray, amd:
 
   // HIP assumes the width is in bytes, but OCL assumes it's in pixels.
   // Note that src and dst should have the same element size.
-  assert(srcImage->getImageFormat().getElementSize() ==
-         dstImage->getImageFormat().getElementSize());
   const size_t elementSize = srcImage->getImageFormat().getElementSize();
+  if (elementSize != dstImage->getImageFormat().getElementSize()) {
+    return hipErrorInvalidValue;
+  }
   static_cast<size_t*>(srcOrigin)[0] /= elementSize;
   static_cast<size_t*>(dstOrigin)[0] /= elementSize;
   static_cast<size_t*>(copyRegion)[0] /= elementSize;
@@ -2299,11 +2399,8 @@ void ihipCopyMemParamSet(const HIP_MEMCPY3D* pCopy, hipMemoryType& srcMemType,
   hipMemoryType srcMemoryType = pCopy->srcMemoryType;
   if (srcMemoryType == hipMemoryTypeUnified) {
     amd::Memory* memObj = getMemoryObject(pCopy->srcDevice, offset);
-    if (memObj != nullptr) {
-      srcMemoryType = ((CL_MEM_SVM_FINE_GRAIN_BUFFER | CL_MEM_USE_HOST_PTR) &
-            memObj->getMemFlags()) ? hipMemoryTypeHost : hipMemoryTypeDevice;
-    } else {
-      srcMemoryType = hipMemoryTypeHost;
+    srcMemoryType = getMemoryType(memObj);
+    if (memObj == nullptr) {
       const_cast<HIP_MEMCPY3D*>(pCopy)->srcXInBytes += offset;
     }
 
@@ -2319,11 +2416,8 @@ void ihipCopyMemParamSet(const HIP_MEMCPY3D* pCopy, hipMemoryType& srcMemType,
   hipMemoryType dstMemoryType = pCopy->dstMemoryType;
   if (dstMemoryType == hipMemoryTypeUnified) {
     amd::Memory* memObj = getMemoryObject(pCopy->dstDevice, offset);
-    if (memObj != nullptr) {
-      dstMemoryType = ((CL_MEM_SVM_FINE_GRAIN_BUFFER | CL_MEM_USE_HOST_PTR) &
-            memObj->getMemFlags()) ? hipMemoryTypeHost : hipMemoryTypeDevice;
-    } else {
-      dstMemoryType = hipMemoryTypeHost;
+    dstMemoryType = getMemoryType(memObj);
+    if (memObj == nullptr) {
       const_cast<HIP_MEMCPY3D*>(pCopy)->dstXInBytes += offset;
     }
 
@@ -3198,14 +3292,14 @@ hipError_t ihipMemset_validate(void* dst, int64_t value, size_t valueSize,
     return hipErrorInvalidValue;
   }
 
-  // In case of vmm sub object, validate using parents vaddr mem object.
-  if (memory->parent() && (memory->getMemFlags() & CL_MEM_VA_RANGE_AMD)) {
-    memory = memory->parent();
-  }
-
   // Validate Mem Access in case of VMM Memory
   if (!memory->ValidateMemAccess(*hip::getCurrentDevice()->devices()[0], true)) {
     return hipErrorUnknown;
+  }
+
+  // In case of vmm sub object, validate using parents vaddr mem object.
+  if (memory->parent() && (memory->getMemFlags() & CL_MEM_VA_RANGE_AMD)) {
+    memory = memory->parent();
   }
 
   // Return error if sizeBytes passed to memcpy is more than the actual size allocated
@@ -3294,6 +3388,7 @@ hipError_t ihipMemset(void* dst, int64_t value, size_t valueSize, size_t sizeByt
     }
     std::vector<amd::Command*> commands;
     hip::Stream* hip_stream = hip::getStream(stream);
+    if (hip_stream == nullptr) { return hipErrorOutOfMemory; }
     hip_error = ihipMemsetCommand(commands, dst, value, valueSize, sizeBytes, hip_stream);
     if (hip_error != hipSuccess) {
       break;
@@ -3692,8 +3787,7 @@ hipError_t hipPointerGetAttributes(hipPointerAttribute_t* attributes, const void
   memset(attributes, 0, sizeof(hipPointerAttribute_t));
 
   if (memObj != nullptr) {
-    attributes->type = ((CL_MEM_SVM_FINE_GRAIN_BUFFER | CL_MEM_USE_HOST_PTR) &
-        memObj->getMemFlags())? hipMemoryTypeHost : hipMemoryTypeDevice;
+    attributes->type = getMemoryType(memObj);
     if (attributes->type == hipMemoryTypeHost) {
       if (memObj->getHostMem() != nullptr) {
         attributes->hostPointer = static_cast<char*>(memObj->getHostMem()) + offset;
@@ -3732,7 +3826,7 @@ hipError_t hipPointerGetAttributes(hipPointerAttribute_t* attributes, const void
     attributes->isManaged = false;
     attributes->allocationFlags = 0;
     attributes->device = hipInvalidDeviceId;
-    LogPrintfError("Cannot get amd_mem_obj for ptr: 0x%x", ptr);
+    LogPrintfError("Cannot get amd_mem_obj for ptr: %p", ptr);
   }
   HIP_RETURN(hipSuccess);
 }
@@ -3776,9 +3870,7 @@ hipError_t ihipPointerGetAttributes(void* data, hipPointer_attribute attribute,
       }
       case HIP_POINTER_ATTRIBUTE_MEMORY_TYPE : {
         if (memObj) { // checks for host type or device type
-          *reinterpret_cast<uint32_t*>(data) =
-          ((CL_MEM_SVM_FINE_GRAIN_BUFFER | CL_MEM_USE_HOST_PTR) &
-            memObj->getMemFlags())? hipMemoryTypeHost : hipMemoryTypeDevice;
+          *reinterpret_cast<uint32_t*>(data) = getMemoryType(memObj);
         } else { // checks for array type
           // ptr must be a host allocation using malloc since memObj is null and is
           // not found in hipArraySet.
@@ -3820,7 +3912,7 @@ hipError_t ihipPointerGetAttributes(void* data, hipPointer_attribute attribute,
       }
       case HIP_POINTER_ATTRIBUTE_HOST_POINTER : {
         if (memObj) {
-          if ((CL_MEM_SVM_FINE_GRAIN_BUFFER | CL_MEM_USE_HOST_PTR) & memObj->getMemFlags()) {
+          if (getMemoryType(memObj) == hipMemoryTypeHost) {
             if (memObj->getHostMem() != nullptr) {
               // Registered memory
               *reinterpret_cast<char**>(data) =
@@ -4539,7 +4631,7 @@ hipError_t hipExternalMemoryGetMappedMipmappedArray(
                                           hip::getNumChannels(mipmapDesc->formatDesc),
                                           mipmapDesc->flags};
   if (!hip::CheckArrayFormat(mipmapDesc->formatDesc)) {
-    return HIP_RETURN(hipErrorInvalidValue);
+    HIP_RETURN(hipErrorInvalidValue);
   }
 
   HIP_RETURN(ihipMipmapArrayCreate(mipmap, &allocateArray, mipmapDesc->numLevels,

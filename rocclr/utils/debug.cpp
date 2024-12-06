@@ -32,7 +32,7 @@
 #include <thread>
 #include <sstream>
 #include <iomanip>
-
+#include <inttypes.h>
 #ifdef _WIN32
 #include <windows.h>
 #endif  // _WIN32
@@ -40,15 +40,33 @@
 namespace amd {
 
 FILE* outFile = stderr;
+const size_t maxLogSize = AMD_LOG_LEVEL_SIZE * Mi;
 
 // ================================================================================================
-void report_warning(const char* message) { fprintf(outFile, "Warning: %s\n", message); }
+void truncate_log_file() {
+  if (outFile != stderr) {
+    fseek(outFile, 0, SEEK_END);
+    long size = ftell(outFile);
+    if (size > maxLogSize) {
+      if (nullptr == freopen(NULL, "w", outFile)) {
+        outFile = stderr;
+      }
+    }
+  }
+}
+
+// ================================================================================================
+void report_warning(const char* message) {
+  truncate_log_file();
+  fprintf(outFile, "Warning: %s\n", message);
+}
 
 // ================================================================================================
 void log_entry(LogLevel level, const char* file, int line, const char* message) {
   if (level == LOG_NONE) {
     return;
   }
+  truncate_log_file();
   fprintf(outFile, ":%d:%s:%d: %s\n", level, file, line, message);
   fflush(outFile);
 }
@@ -67,12 +85,10 @@ void log_timestamped(LogLevel level, const char* file, int line, const char* mes
   if (level == LOG_NONE) {
     return;
   }
-#if 0
-    fprintf(outFile, ":%d:%s:%d: (%010lld) %s\n", level, file, line, time, message);
-#else  // if you prefer fixed-width fields
+
+  truncate_log_file();
   fprintf(outFile, ":% 2d:%15s:% 5d: (%010lld) us %s\n", level, file, line, time / 1000ULL,
           message);
-#endif
   fflush(outFile);
 }
 
@@ -80,8 +96,8 @@ void log_timestamped(LogLevel level, const char* file, int line, const char* mes
 void log_printf(LogLevel level, const char* file, int line, const char* format, ...) {
   va_list ap;
   std::stringstream pidtid;
-  if (AMD_LOG_LEVEL > 4) {
-    pidtid << "[pid:" << Os::getProcessId() << " tid: " ;
+  if (AMD_LOG_LEVEL >= 4) {
+    pidtid << "[pid:" << Os::getProcessId() << " tid: 0x" ;
     pidtid << std::hex << std::setw(5) << std::this_thread::get_id() << "]";
   }
 
@@ -91,8 +107,10 @@ void log_printf(LogLevel level, const char* file, int line, const char* format, 
   va_end(ap);
   uint64_t timeUs = Os::timeNanos() / 1000ULL;
 
-  fprintf(outFile, ":%d:%-25s:%-4d: %010lud us: %s %s\n", level, file, line,
-    timeUs, pidtid.str().c_str(),message);
+  truncate_log_file();
+
+  fprintf(outFile, ":%d:%-25s:%-4d: %010" PRIu64 " us: %s %s\n", level, file, line,
+    timeUs, pidtid.str().c_str(), message);
 
   fflush(outFile);
 }
@@ -102,8 +120,8 @@ void log_printf(LogLevel level, const char* file, int line, uint64_t* start,
                 const char* format, ...) {
   va_list ap;
   std::stringstream pidtid;
-  if (AMD_LOG_LEVEL > 4) {
-    pidtid << "[pid:" << Os::getProcessId() << " tid: " ;
+  if (AMD_LOG_LEVEL >= 4) {
+    pidtid << "[pid:" << Os::getProcessId() << " tid: 0x" ;
     pidtid << std::hex << std::setw(5) << std::this_thread::get_id() << "]";
   }
   va_start(ap, format);
@@ -112,11 +130,13 @@ void log_printf(LogLevel level, const char* file, int line, uint64_t* start,
   va_end(ap);
   uint64_t timeUs = Os::timeNanos() / 1000ULL;
 
+  truncate_log_file();
+
   if (start == 0 || *start == 0) {
-    fprintf(outFile, ":%d:%-25s:%-4d: %010lud us: %s %s\n", level, file, line,
+    fprintf(outFile, ":%d:%-25s:%-4d: %010" PRIu64 " us: %s %s\n", level, file, line,
       timeUs, pidtid.str().c_str(), message);
   } else {
-    fprintf(outFile, ":%d:%-25s:%-4d: %010lud us: %s %s: duration: %lud us\n",
+    fprintf(outFile, ":%d:%-25s:%-4d: %010" PRIu64 " us: %s %s: duration: %" PRIu64 " us\n",
       level, file, line, timeUs, pidtid.str().c_str(), message, timeUs - *start);
   }
   fflush(outFile);

@@ -114,6 +114,7 @@ class Event : public RuntimeObject {
     uint64_t correlation_id_;
     bool enabled_;        //!< Profiling enabled for the wave limiter
     bool marker_ts_;      //!< TS marker
+    bool batch_flush_ = true; //!< Command can flush the batch in direct dispatch mode
 
    void clear() {
       queued_ = 0ULL;
@@ -268,7 +269,7 @@ class Command : public Event {
   std::vector<void*> data_;
   const Event* waitingEvent_;  //!< Waiting event associated with the marker
 
-  bool capturing_ = false;           //!< Flag to enable/disable graph gpu packet capture
+  bool packetCapturing_ = false;           //!< Flag to enable/disable graph gpu packet capture
   std::vector<uint8_t*>* gpuPackets_;  //!< GPU packets captured when graph capturing is enabled
   GraphKernelArgManager* graphKernArgMgr_ = nullptr;  //!< KernelMgr for graph
   address kernArgOffset_ = nullptr;  //!< KernelArg buffer to used when graph capturing is enabled
@@ -316,13 +317,13 @@ class Command : public Event {
       command_pool_ = nullptr;
     }
   }
-  bool getCapturingState() const { return capturing_; }
+  bool getPktCapturingState() const { return packetCapturing_; }
 
   //! Sets AQL capture state, aql packet to capture and where to copy kernArgs
-  void setCapturingState(bool state, std::vector<uint8_t*>* packet,
+  void setPktCapturingState(bool state, std::vector<uint8_t*>* packet,
                          amd::GraphKernelArgManager* graphKernArgMgr,
                          std::string* capturedKernelName) {
-    capturing_ = state;
+    packetCapturing_ = state;
     gpuPackets_ = packet;
     graphKernArgMgr_ = graphKernArgMgr;
     capturedKernelName_ = capturedKernelName;
@@ -952,6 +953,8 @@ class CopyMemoryCommand : public TwoMemoryArgsCommand {
   const BufferRect& dstRect() const { return dstRect_; }
   //! Return the copy MetaData
   amd::CopyMetadata copyMetadata() const { return copyMetadata_; }
+  //! Updates copy MetaData
+  void SetCopyMetadata(amd::CopyMetadata copyMetadata) { copyMetadata_ = copyMetadata; }
   //! Updates the host memory to read from
   void setSource(Memory& srcMemory) { memory1_ = &srcMemory; }
   //! Updates the memory object to write to.
@@ -1746,6 +1749,13 @@ class CopyMemoryP2PCommand : public CopyMemoryCommand {
                        Coord3D srcOrigin, Coord3D dstOrigin, Coord3D size)
       : CopyMemoryCommand(queue, cmdType, eventWaitList, srcMemory, dstMemory, srcOrigin, dstOrigin,
                           size) {}
+
+  CopyMemoryP2PCommand(HostQueue& queue, cl_command_type cmdType, const EventWaitList& eventWaitList,
+                    Memory& srcMemory, Memory& dstMemory, Coord3D srcOrigin, Coord3D dstOrigin,
+                    Coord3D size, const BufferRect& srcRect, const BufferRect& dstRect,
+                    amd::CopyMetadata copyMetadata = amd::CopyMetadata())
+      : CopyMemoryCommand(queue, cmdType, eventWaitList, srcMemory, dstMemory, srcOrigin, dstOrigin,
+                          size, srcRect, dstRect) {}
 
   virtual void submit(device::VirtualDevice& device) { device.submitCopyMemoryP2P(*this); }
 

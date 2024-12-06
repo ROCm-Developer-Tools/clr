@@ -57,6 +57,7 @@
 #include <set>
 #include <unordered_set>
 #include <utility>
+#include <shared_mutex>
 
 namespace amd {
 class Command;
@@ -707,6 +708,8 @@ class Settings : public amd::HeapObject {
   //! Enable the specified extension
   void enableExtension(uint name) { extensions_ |= static_cast<uint64_t>(1) << name; }
 
+  size_t stagedXferSize_ = 0;     //!< Staged buffer size
+
  private:
   //! Disable copy constructor
   Settings(const Settings&);
@@ -1265,7 +1268,7 @@ class VirtualDevice : public amd::HeapObject {
   VirtualDevice(amd::Device& device)
     : device_(device)
     , blitMgr_(NULL)
-    , execution_("Virtual device execution lock", true)
+    , execution_(true) /* Virtual device execution lock */
     , index_(0) {}
 
   //! Destroy this virtual device.
@@ -1273,7 +1276,7 @@ class VirtualDevice : public amd::HeapObject {
 
   //! Return the physical device for this virtual device.
   const amd::Device& device() const { return device_(); }
-
+  virtual uint64_t getQueueID() = 0;
   virtual void submitReadMemory(amd::ReadMemoryCommand& cmd) = 0;
   virtual void submitWriteMemory(amd::WriteMemoryCommand& cmd) = 0;
   virtual void submitCopyMemory(amd::CopyMemoryCommand& cmd) = 0;
@@ -1321,9 +1324,6 @@ class VirtualDevice : public amd::HeapObject {
   //! Returns true if device has active wait setting
   bool ActiveWait() const;
 
-  //! Returns the status of queue handler callback
-  virtual bool isHandlerPending() const = 0;
-
   //! Returns fence state of the VirtualGPU
   virtual bool isFenceDirty() const = 0;
   //! Init hidden heap for device memory allocations
@@ -1332,6 +1332,9 @@ class VirtualDevice : public amd::HeapObject {
   virtual bool dispatchAqlPacket(uint8_t* aqlpacket,
                                  const std::string& kernelName,
                                  amd::AccumulateCommand* vcmd = nullptr) = 0;
+
+  //! Returns the number of outstanding HSA async handlers
+  std::atomic<uint64_t>& QueuedAsyncHandlers() const { return queued_async_handlers_; }
 
  private:
   //! Disable default copy constructor
@@ -1348,6 +1351,7 @@ class VirtualDevice : public amd::HeapObject {
 
   amd::Monitor execution_;  //!< Lock to serialise access to all device objects
   uint index_;              //!< The virtual device unique index
+  mutable std::atomic<uint64_t> queued_async_handlers_ = 0; //!< Outstanding HSA async handlers
 };
 
 }  // namespace amd::device
@@ -1357,27 +1361,32 @@ namespace amd {
 //! MemoryObject map lookup  class
 class MemObjMap : public AllStatic {
  public:
-  static size_t size();  //!< obtain the size of the container
-  static void AddMemObj(const void* k,
-                        amd::Memory* v);  //!< add the host mem pointer and buffer in the container
-  static void RemoveMemObj(const void* k);  //!< Remove an entry of mem object from the container
-  static amd::Memory* FindMemObj(
-      const void* k,              //!< find the mem object based on the input pointer
-      size_t* offset = nullptr);  //!< Offset in the memory location
-  static void UpdateAccess(amd::Device *peerDev);
-  static void Purge(amd::Device* dev); //!< Purge all user allocated memories on the given device
+  //!< add the host mem pointer and buffer in the container
+  static void AddMemObj(const void* k, amd::Memory* v);
 
-  static void AddVirtualMemObj(const void* k,
-                               amd::Memory* v);  //!< Same as AddMemObj but for virtual addressing
-  static void RemoveVirtualMemObj(const void* k);  //!< Same as RemoveMemObj but for virtual addressing
-  static amd::Memory* FindVirtualMemObj(
-      const void* k);  //!< Same as FindMemObj but for virtual addressing
+  //!< Remove an entry of mem object from the container
+  static void RemoveMemObj(const void* k);
+
+  //!< Find the mem object based on the input pointer, outputs the offset
+  static amd::Memory* FindMemObj( const void* k, size_t* offset = nullptr);
+  static void UpdateAccess(amd::Device *peerDev);
+  //!< Purge all user allocated memories on the given device
+  static void Purge(amd::Device* dev);
+  //!< Same as AddMemObj but for virtual addressing
+  static void AddVirtualMemObj(const void* k, amd::Memory* v);
+
+  //!< Same as RemoveMemObj but for virtual addressing
+  static void RemoveVirtualMemObj(const void* k);
+  //!< Same as FindMemObj but for virtual addressing
+  static amd::Memory* FindVirtualMemObj(const void* k);
+
  private:
-  static std::map<uintptr_t, amd::Memory*>
-      MemObjMap_;                      //!< the mem object<->hostptr information container
-  static std::map<uintptr_t, amd::Memory*>
-      VirtualMemObjMap_;               //!< the virtual mem object<->hostptr information container
-  static amd::Monitor AllocatedLock_;  //!< amd monitor locker
+  //!< the mem object<->hostptr information container
+  static std::map<uintptr_t, amd::Memory*> MemObjMap_;
+  //!< the virtual mem object<->hostptr information container
+  static std::map<uintptr_t, amd::Memory*> VirtualMemObjMap_;
+  //!< Shared read/write lock
+  static std::shared_mutex AllocatedLock_;
 };
 
 /// @brief Instruction Set Architecture properties.
@@ -1897,7 +1906,7 @@ class Device : public RuntimeObject {
    *
    * @param addr Start address of the range
    */
-  virtual void virtualFree(void* addr) = 0;
+  virtual bool virtualFree(void* addr) = 0;
 
   /**
    * Export Shareable VMM Handle to FD
@@ -2089,6 +2098,24 @@ class Device : public RuntimeObject {
     return false;
   }
 
+  //! Returns the queues that have at least one submitted command
+  std::vector<amd::CommandQueue*> getActiveQueues() {
+     amd::ScopedLock lock(activeQueuesLock_);
+     return std::vector<amd::CommandQueue*>(activeQueues.begin(), activeQueues.end());
+  }
+
+  //! Adds the queue to the set of active command queues
+  void addToActiveQueues(amd::CommandQueue* commandQueue) {
+     amd::ScopedLock lock(activeQueuesLock_);
+     activeQueues.insert(commandQueue);
+  }
+
+  //! Removes the queue from the set of active command queues
+  void removeFromActiveQueues(amd::CommandQueue* commandQueue) {
+    amd::ScopedLock lock(activeQueuesLock_);
+    activeQueues.erase(commandQueue);
+  }
+
   // Notifies device about context destroy
   virtual void ContextDestroy() {}
 
@@ -2138,6 +2165,8 @@ class Device : public RuntimeObject {
   uint64_t stack_size_{1024};       //!< Device stack size
   device::Memory* initial_heap_buffer_;   //!< Initial heap buffer
   uint64_t initial_heap_size_{HIP_INITIAL_DM_SIZE};  //!< Initial device heap size
+  amd::Monitor activeQueuesLock_ {}; //!< Guards access to the activeQueues set
+  std::unordered_set<amd::CommandQueue*> activeQueues; //!< The set of active queues
  private:
   const Isa *isa_;                //!< Device isa
   bool IsTypeMatching(cl_device_type type, bool offlineDevices);
