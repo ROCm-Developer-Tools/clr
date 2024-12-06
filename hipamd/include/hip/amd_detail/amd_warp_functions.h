@@ -92,6 +92,10 @@ __device__ static inline int __hip_move_dpp_N(int src) {
         }
     } warpSize{};
 #else
+    #if defined(__HIP_DEVICE_COMPILE__)
+        [[deprecated("Using warpSize as a compile time constant is deprecated, "
+                     "and will no longer be possible in future releases.")]]
+    #endif
     __device__
     static constexpr int warpSize = __AMDGCN_WAVEFRONT_SIZE;
 #endif
