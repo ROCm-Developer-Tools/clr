@@ -215,7 +215,7 @@ class thread_block : public thread_group {
   __CG_QUALIFIER__ thread_group new_tiled_group(unsigned int tile_size) const {
     const bool pow2 = ((tile_size & (tile_size - 1)) == 0);
     // Invalid tile size, assert
-    if (!tile_size || (tile_size > __AMDGCN_WAVEFRONT_SIZE) || !pow2) {
+    if (!tile_size || (tile_size > warpSize) || !pow2) {
       __hip_assert(false && "invalid tile size");
     }
 
@@ -276,7 +276,7 @@ class tiled_group : public thread_group {
   __CG_QUALIFIER__ tiled_group new_tiled_group(unsigned int tile_size) const {
     const bool pow2 = ((tile_size & (tile_size - 1)) == 0);
 
-    if (!tile_size || (tile_size > __AMDGCN_WAVEFRONT_SIZE) || !pow2) {
+    if (!tile_size || (tile_size > warpSize) || !pow2) {
       __hip_assert(false && "invalid tile size");
     }
 
@@ -339,7 +339,7 @@ class coalesced_group : public thread_group {
     if (coalesced_info.tiled_info.is_tiled) {
       unsigned int base_offset = (thread_rank() & (~(tile_size - 1)));
       unsigned int masklength = min(static_cast<unsigned int>(size()) - base_offset, tile_size);
-      lane_mask member_mask = static_cast<lane_mask>(-1) >> (__AMDGCN_WAVEFRONT_SIZE - masklength);
+      lane_mask member_mask = static_cast<lane_mask>(-1) >> (warpSize - masklength);
 
       member_mask <<= (__lane_id() & ~(tile_size - 1));
       coalesced_group coalesced_tile = coalesced_group(member_mask);
@@ -354,7 +354,7 @@ class coalesced_group : public thread_group {
       unsigned int tile_rank = 0;
       int lanes_to_skip = ((thread_rank()) / tile_size) * tile_size;
 
-      for (unsigned int i = 0; i < __AMDGCN_WAVEFRONT_SIZE; i++) {
+      for (unsigned int i = 0; i < warpSize; i++) {
         lane_mask active = coalesced_info.member_mask & (1 << i);
         // Make sure the lane is active
         if (active) {
@@ -413,11 +413,11 @@ class coalesced_group : public thread_group {
 
     srcRank = srcRank % static_cast<int>(size());
 
-    int lane = (size() == __AMDGCN_WAVEFRONT_SIZE) ? srcRank
-             : (__AMDGCN_WAVEFRONT_SIZE == 64)     ? __fns64(coalesced_info.member_mask, 0, (srcRank + 1))
-                                          : __fns32(coalesced_info.member_mask, 0, (srcRank + 1));
+    int lane = (size() == warpSize) ? srcRank
+             : (warpSize == 64)     ? __fns64(coalesced_info.member_mask, 0, (srcRank + 1))
+                                    : __fns32(coalesced_info.member_mask, 0, (srcRank + 1));
 
-    return __shfl(var, lane, __AMDGCN_WAVEFRONT_SIZE);
+    return __shfl(var, lane, warpSize);
   }
 
   template <class T>
@@ -428,12 +428,12 @@ class coalesced_group : public thread_group {
     // and WARP_SIZE as the shift value rather than lane_delta itself.
     // This is not described in the documentation and is not done here.
 
-    if (size() == __AMDGCN_WAVEFRONT_SIZE) {
-      return __shfl_down(var, lane_delta, __AMDGCN_WAVEFRONT_SIZE);
+    if (size() == warpSize) {
+      return __shfl_down(var, lane_delta, warpSize);
     }
 
     int lane;
-    if (__AMDGCN_WAVEFRONT_SIZE == 64) {
+    if (warpSize == 64) {
       lane = __fns64(coalesced_info.member_mask, __lane_id(), lane_delta + 1);
     }
     else {
@@ -444,7 +444,7 @@ class coalesced_group : public thread_group {
       lane = __lane_id();
     }
 
-    return __shfl(var, lane, __AMDGCN_WAVEFRONT_SIZE);
+    return __shfl(var, lane, warpSize);
   }
 
   template <class T>
@@ -455,15 +455,15 @@ class coalesced_group : public thread_group {
     // and WARP_SIZE as the shift value rather than lane_delta itself.
     // This is not described in the documentation and is not done here.
 
-    if (size() == __AMDGCN_WAVEFRONT_SIZE) {
-      return __shfl_up(var, lane_delta, __AMDGCN_WAVEFRONT_SIZE);
+    if (size() == warpSize) {
+      return __shfl_up(var, lane_delta, warpSize);
     }
 
     int lane;
-    if (__AMDGCN_WAVEFRONT_SIZE == 64) {
+    if (warpSize == 64) {
       lane = __fns64(coalesced_info.member_mask, __lane_id(), -(lane_delta + 1));
     }
-    else if (__AMDGCN_WAVEFRONT_SIZE == 32) {
+    else if (warpSize == 32) {
       lane = __fns32(coalesced_info.member_mask, __lane_id(), -(lane_delta + 1));
     }
 
@@ -471,7 +471,7 @@ class coalesced_group : public thread_group {
       lane = __lane_id();
     }
 
-    return __shfl(var, lane, __AMDGCN_WAVEFRONT_SIZE);
+    return __shfl(var, lane, warpSize);
   }
 #if !defined(HIP_DISABLE_WARP_SYNC_BUILTINS)
    __CG_QUALIFIER__ unsigned long long ballot(int pred) const {
