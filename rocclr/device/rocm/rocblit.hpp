@@ -231,7 +231,11 @@ class DmaBlitManager : public device::HostBlitManager {
   //! taking into account the Hsail profile supported by Hsa Agent
   bool hsaCopy(const Memory& srcMemory, const Memory& dstMemory, const amd::Coord3D& srcOrigin,
                const amd::Coord3D& dstOrigin, const amd::Coord3D& size,
-               amd::CopyMetadata copyMetadata) const;
+               amd::CopyMetadata& copyMetadata) const;
+
+  inline bool rocrCopyBuffer(address dst, hsa_agent_t& dstAgent,
+                             const_address src, hsa_agent_t& srcAgent, size_t size,
+                             amd::CopyMetadata& copyMetadata) const;
 
   const size_t MinSizeForPinnedTransfer;
   bool completeOperation_;                    //!< DMA blit manager must complete operation
@@ -248,33 +252,13 @@ class DmaBlitManager : public device::HostBlitManager {
   //! Disable operator=
   DmaBlitManager& operator=(const DmaBlitManager&);
 
-  //! Reads video memory, using a staged buffer
-  bool readMemoryStaged(Memory& srcMemory,  //!< Source memory object
-                        void* dstHost,      //!< Destination host memory
-                        Memory& xferBuf,    //!< Staged buffer for read
-                        size_t origin,      //!< Original offset in the source memory
-                        size_t& offset,     //!< Offset for the current copy pointer
-                        size_t& totalSize,  //!< Total size for copy region
-                        size_t xferSize     //!< Transfer size
-                        ) const;
-
-  //! Write into video memory, using a staged buffer
-  bool writeMemoryStaged(const void* srcHost,  //!< Source host memory
-                         Memory& dstMemory,    //!< Destination memory object
-                         address staging,      //!< Staged buffer for write
-                         size_t origin,        //!< Original offset in the destination memory
-                         size_t& offset,       //!< Offset for the current copy pointer
-                         size_t& totalSize,    //!< Total size for the copy region
-                         size_t xferSize       //!< Transfer size
-                         ) const;
-
   //! Assits in transferring data from Host to Local or vice versa
   //! taking into account the Hsail profile supported by Hsa Agent
-  bool hsaCopyStaged(const_address hostSrc,  //!< Contains source data to be copied
-                     address hostDst,        //!< Destination buffer address for copying
-                     size_t size,            //!< Size of data to copy in bytes
-                     address staging,        //!< Staging resource
-                     bool hostToDev          //!< True if data is copied from Host To Device
+  bool hsaCopyStaged(const_address hostSrc,           //!< Contains source data to be copied
+                     address hostDst,                 //!< Destination buffer address for copying
+                     size_t size,                     //!< Size of data to copy in bytes
+                     bool hostToDev,                  //!< True if data is copied from H2D
+                     amd::CopyMetadata& copyMetadata  //!< Memory copy MetaData
                      ) const;
 
   bool forceHostWaitFunc(size_t copy_size) const;
@@ -301,6 +285,7 @@ class KernelBlitManager : public DmaBlitManager {
     BlitCopyImage1DA,
     BlitCopyImageToBuffer,
     BlitCopyBufferToImage,
+    BatchMemOp,
     BlitTotal
   };
 
@@ -519,6 +504,9 @@ class KernelBlitManager : public DmaBlitManager {
                              uint64_t mask
   ) const;
 
+  //! Batch memory ops- Submits batch of streamWaits and streamWrite operations.
+  virtual bool batchMemOps(const void* paramArray, size_t paramSize, uint32_t count) const;
+
   virtual amd::Monitor* lockXfer() const { return &lockXferOps_; }
 
   virtual bool initHeap(device::Memory* heap_to_initialize,
@@ -583,6 +571,12 @@ class KernelBlitManager : public DmaBlitManager {
     return (dev().info().imageSupport_) ? BlitTotal : BlitLinearTotal;
   }
 
+  //! Copies a buffer using the shader path
+  bool shaderCopyBuffer(address dst, address src,
+                        const amd::Coord3D& dstOrigin, const amd::Coord3D& srcOrigin,
+                        const amd::Coord3D& size, bool entire, const uint32_t blitWg,
+                        amd::CopyMetadata copyMetadata, bool attachSignal = false) const;
+
   //! Disable copy constructor
   KernelBlitManager(const KernelBlitManager&);
 
@@ -596,13 +590,15 @@ class KernelBlitManager : public DmaBlitManager {
 };
 
 static const char* BlitName[KernelBlitManager::BlitTotal] = {
-  "__amd_rocclr_fillBufferAligned", "__amd_rocclr_fillBufferAligned2D", "__amd_rocclr_copyBuffer",
-  "__amd_rocclr_copyBufferAligned", "__amd_rocclr_copyBufferRect",
-  "__amd_rocclr_copyBufferRectAligned", "__amd_rocclr_streamOpsWrite", "__amd_rocclr_streamOpsWait",
-  "__amd_rocclr_scheduler", "__amd_rocclr_gwsInit", "__amd_rocclr_initHeap",
-  "__amd_rocclr_fillImage", "__amd_rocclr_copyImage", "__amd_rocclr_copyImage1DA",
-  "__amd_rocclr_copyImageToBuffer", "__amd_rocclr_copyBufferToImage"
-};
+    "__amd_rocclr_fillBufferAligned", "__amd_rocclr_fillBufferAligned2D",
+    "__amd_rocclr_copyBuffer",        "__amd_rocclr_copyBufferAligned",
+    "__amd_rocclr_copyBufferRect",    "__amd_rocclr_copyBufferRectAligned",
+    "__amd_rocclr_streamOpsWrite",    "__amd_rocclr_streamOpsWait",
+    "__amd_rocclr_scheduler",         "__amd_rocclr_gwsInit",
+    "__amd_rocclr_initHeap",          "__amd_rocclr_fillImage",
+    "__amd_rocclr_copyImage",         "__amd_rocclr_copyImage1DA",
+    "__amd_rocclr_copyImageToBuffer", "__amd_rocclr_copyBufferToImage",
+    "__amd_rocclr_batchMemOp"};
 
 inline void KernelBlitManager::setArgument(amd::Kernel* kernel, size_t index,
                                            size_t size, const void* value, size_t offset,

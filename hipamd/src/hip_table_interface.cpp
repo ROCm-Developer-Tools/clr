@@ -1413,6 +1413,10 @@ hipError_t hipStreamWriteValue64(hipStream_t stream, void* ptr, uint64_t value,
                                  unsigned int flags) {
   return hip::GetHipDispatchTable()->hipStreamWriteValue64_fn(stream, ptr, value, flags);
 }
+hipError_t hipStreamBatchMemOp(hipStream_t stream, unsigned int count,
+                               hipStreamBatchMemOpParams* paramArray, unsigned int flags) {
+  return hip::GetHipDispatchTable()->hipStreamBatchMemOp_fn(stream, count, paramArray, flags);
+}
 hipError_t hipTexObjectCreate(hipTextureObject_t* pTexObject, const HIP_RESOURCE_DESC* pResDesc,
                               const HIP_TEXTURE_DESC* pTexDesc,
                               const HIP_RESOURCE_VIEW_DESC* pResViewDesc) {
@@ -1818,4 +1822,24 @@ hipError_t hipGraphNodeSetParams(hipGraphNode_t node, hipGraphNodeParams *nodePa
 }
 hipError_t hipExtHostAlloc(void** ptr, size_t size, unsigned int flags) {
   return hip::GetHipDispatchTable()->hipExtHostAlloc_fn(ptr, size, flags);
+}
+hipError_t hipGraphAddBatchMemOpNode(hipGraphNode_t* pGraphNode, hipGraph_t graph,
+                                     const hipGraphNode_t* dependencies, size_t numDependencies,
+                                     const hipBatchMemOpNodeParams* nodeParams) {
+  return hip::GetHipDispatchTable()->hipGraphAddBatchMemOpNode_fn(pGraphNode, graph, dependencies,
+                                                                  numDependencies, nodeParams);
+}
+hipError_t hipGraphBatchMemOpNodeGetParams(hipGraphNode_t hNode,
+                                           hipBatchMemOpNodeParams* nodeParams_out) {
+  return hip::GetHipDispatchTable()->hipGraphBatchMemOpNodeGetParams_fn(hNode, nodeParams_out);
+}
+hipError_t hipGraphBatchMemOpNodeSetParams(hipGraphNode_t hNode,
+                                           hipBatchMemOpNodeParams* nodeParams) {
+  return hip::GetHipDispatchTable()->hipGraphBatchMemOpNodeSetParams_fn(hNode, nodeParams);
+}
+hipError_t hipGraphExecBatchMemOpNodeSetParams(hipGraphExec_t hGraphExec,
+                                               hipGraphNode_t hNode,
+                                               const hipBatchMemOpNodeParams* nodeParams) {
+  return hip::GetHipDispatchTable()->hipGraphExecBatchMemOpNodeSetParams_fn(hGraphExec, hNode,
+                                                                            nodeParams);
 }

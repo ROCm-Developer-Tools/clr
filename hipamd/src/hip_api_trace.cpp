@@ -602,6 +602,8 @@ hipError_t hipStreamWaitValue64(hipStream_t stream, void* ptr, uint64_t value, u
                                 uint64_t mask);
 hipError_t hipStreamWriteValue32(hipStream_t stream, void* ptr, uint32_t value, unsigned int flags);
 hipError_t hipStreamWriteValue64(hipStream_t stream, void* ptr, uint64_t value, unsigned int flags);
+hipError_t hipStreamBatchMemOp(hipStream_t stream, unsigned int count,
+                               hipStreamBatchMemOpParams* paramArray, unsigned int flags);
 hipError_t hipTexObjectCreate(hipTextureObject_t* pTexObject, const HIP_RESOURCE_DESC* pResDesc,
                               const HIP_TEXTURE_DESC* pTexDesc,
                               const HIP_RESOURCE_VIEW_DESC* pResViewDesc);
@@ -802,7 +804,15 @@ hipError_t hipExternalMemoryGetMappedMipmappedArray(
     const hipExternalMemoryMipmappedArrayDesc* mipmapDesc);
 hipError_t hipDrvGraphMemcpyNodeGetParams(hipGraphNode_t hNode, HIP_MEMCPY3D* nodeParams);
 hipError_t hipDrvGraphMemcpyNodeSetParams(hipGraphNode_t hNode, const HIP_MEMCPY3D* nodeParams);
-
+hipError_t hipGraphAddBatchMemOpNode(hipGraphNode_t* phGraphNode, hipGraph_t hGraph,
+                                     const hipGraphNode_t* dependencies, size_t numDependencies,
+                                     const hipBatchMemOpNodeParams* nodeParams);
+hipError_t hipGraphBatchMemOpNodeGetParams(hipGraphNode_t hNode,
+                                           hipBatchMemOpNodeParams* nodeParams_out);
+hipError_t hipGraphBatchMemOpNodeSetParams(hipGraphNode_t hNode,
+                                           hipBatchMemOpNodeParams* nodeParams);
+hipError_t hipGraphExecBatchMemOpNodeSetParams(hipGraphExec_t hGraphExec, hipGraphNode_t hNode,
+                                               const hipBatchMemOpNodeParams* nodeParams);
 }  // namespace hip
 
 namespace hip {
@@ -1197,6 +1207,7 @@ void UpdateDispatchTable(HipDispatchTable* ptrDispatchTable) {
   ptrDispatchTable->hipStreamWaitValue64_fn = hip::hipStreamWaitValue64;
   ptrDispatchTable->hipStreamWriteValue32_fn = hip::hipStreamWriteValue32;
   ptrDispatchTable->hipStreamWriteValue64_fn = hip::hipStreamWriteValue64;
+  ptrDispatchTable->hipStreamBatchMemOp_fn = hip::hipStreamBatchMemOp;
   ptrDispatchTable->hipTexObjectCreate_fn = hip::hipTexObjectCreate;
   ptrDispatchTable->hipTexObjectDestroy_fn = hip::hipTexObjectDestroy;
   ptrDispatchTable->hipTexObjectGetResourceDesc_fn = hip::hipTexObjectGetResourceDesc;
@@ -1298,6 +1309,11 @@ void UpdateDispatchTable(HipDispatchTable* ptrDispatchTable) {
       hip::hipExternalMemoryGetMappedMipmappedArray;
   ptrDispatchTable->hipDrvGraphMemcpyNodeGetParams_fn = hip::hipDrvGraphMemcpyNodeGetParams;
   ptrDispatchTable->hipDrvGraphMemcpyNodeSetParams_fn = hip::hipDrvGraphMemcpyNodeSetParams;
+  ptrDispatchTable->hipGraphAddBatchMemOpNode_fn = hip::hipGraphAddBatchMemOpNode;
+  ptrDispatchTable->hipGraphBatchMemOpNodeGetParams_fn = hip::hipGraphBatchMemOpNodeGetParams;
+  ptrDispatchTable->hipGraphBatchMemOpNodeSetParams_fn = hip::hipGraphBatchMemOpNodeSetParams;
+  ptrDispatchTable->hipGraphExecBatchMemOpNodeSetParams_fn =
+      hip::hipGraphExecBatchMemOpNodeSetParams;
 }
 
 #if HIP_ROCPROFILER_REGISTER > 0
@@ -1887,6 +1903,13 @@ HIP_ENFORCE_ABI(HipDispatchTable, hipDrvGraphMemcpyNodeSetParams_fn, 460)
 HIP_ENFORCE_ABI(HipDispatchTable, hipExtHostAlloc_fn, 461)
 // HIP_RUNTIME_API_TABLE_STEP_VERSION == 6
 HIP_ENFORCE_ABI(HipDispatchTable, hipDeviceGetTexture1DLinearMaxWidth_fn, 462)
+// HIP_RUNTIME_API_TABLE_STEP_VERSION == 7
+HIP_ENFORCE_ABI(HipDispatchTable, hipStreamBatchMemOp_fn, 463);
+// HIP_RUNTIME_API_TABLE_STEP_VERSION == 8
+HIP_ENFORCE_ABI(HipDispatchTable, hipGraphAddBatchMemOpNode_fn, 464);
+HIP_ENFORCE_ABI(HipDispatchTable, hipGraphBatchMemOpNodeGetParams_fn, 465);
+HIP_ENFORCE_ABI(HipDispatchTable, hipGraphBatchMemOpNodeSetParams_fn, 466);
+HIP_ENFORCE_ABI(HipDispatchTable, hipGraphExecBatchMemOpNodeSetParams_fn, 467);
 
 // if HIP_ENFORCE_ABI entries are added for each new function pointer in the table, the number below
 // will be +1 of the number in the last HIP_ENFORCE_ABI line. E.g.:
@@ -1894,9 +1917,9 @@ HIP_ENFORCE_ABI(HipDispatchTable, hipDeviceGetTexture1DLinearMaxWidth_fn, 462)
 //  HIP_ENFORCE_ABI(<table>, <functor>, 8)
 //
 //  HIP_ENFORCE_ABI_VERSIONING(<table>, 9) <- 8 + 1 = 9
-HIP_ENFORCE_ABI_VERSIONING(HipDispatchTable, 463)
+HIP_ENFORCE_ABI_VERSIONING(HipDispatchTable, 468)
 
-static_assert(HIP_RUNTIME_API_TABLE_MAJOR_VERSION == 0 && HIP_RUNTIME_API_TABLE_STEP_VERSION == 6,
+static_assert(HIP_RUNTIME_API_TABLE_MAJOR_VERSION == 0 && HIP_RUNTIME_API_TABLE_STEP_VERSION == 8,
               "If you get this error, add new HIP_ENFORCE_ABI(...) code for the new function "
               "pointers and then update this check so it is true");
 #endif

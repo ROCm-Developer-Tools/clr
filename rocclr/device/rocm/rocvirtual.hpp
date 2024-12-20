@@ -30,6 +30,8 @@
 #include "rocprintf.hpp"
 #include "hsa/hsa_ven_amd_aqlprofile.h"
 #include "rocsched.hpp"
+#include "device/device.hpp"
+#include <stack>
 
 namespace amd::roc {
 class Device;
@@ -196,10 +198,16 @@ class VirtualGPU : public device::VirtualDevice {
     ~ManagedBuffer();
 
     //! Allocates all necessary resources to manage memory
-    bool Create();
+    bool Create(amd::Device::MemorySegment mem_segment);
 
     //! Acquires memory for use on the gpu
     address Acquire(uint32_t size);
+
+    //! Acquires custom aligned memory for use on the gpu
+    address Acquire(uint32_t size, uint32_t alignment);
+
+    //! Reset mem pool
+    void ResetPool();
 
   private:
     VirtualGPU& gpu_;                 //!< Queue object for ROCm device
@@ -270,7 +278,8 @@ class VirtualGPU : public device::VirtualDevice {
     HwQueueEngine GetActiveEngine() const { return engine_; }
 
     //! Returns the last submitted signal for a wait
-    std::vector<hsa_signal_t>& WaitingSignal(HwQueueEngine engine = HwQueueEngine::Compute);
+    std::vector<hsa_signal_t>& WaitingSignal(HwQueueEngine engine = HwQueueEngine::Compute,
+                                             bool forceHostWait = true);
 
     //! Resets current signal back to the previous one. It's necessary in a case of ROCr failure.
     void ResetCurrentSignal();
@@ -295,7 +304,11 @@ class VirtualGPU : public device::VirtualDevice {
       sdma_profiling_ = profile;
       hsa_amd_profiling_async_copy_enable(profile);
     }
+
   private:
+    //! Creates HSA signal with the specified scope
+    bool CreateSignal(ProfilingSignal* signal, bool interrupt = false) const;
+
     //! Wait for the next active signal
     void WaitNext() {
       size_t next = (current_id_ + 1) % signal_list_.size();
@@ -307,6 +320,8 @@ class VirtualGPU : public device::VirtualDevice {
     bool CpuWaitForSignal(ProfilingSignal* signal);
 
     HwQueueEngine engine_ = HwQueueEngine::Unknown; //!< Engine used in the current operations
+    std::stack<ProfilingSignal*> signal_pool_irq_;  //!< The pool of free signals with interrupts
+    std::stack<ProfilingSignal*> signal_pool_;      //!< The pool of free signals without interrupt
     std::vector<ProfilingSignal*> signal_list_;     //!< The pool of all signals for processing
     size_t current_id_ = 0;       //!< Last submitted signal
     bool sdma_profiling_ = false; //!< If TRUE, then SDMA profiling is enabled
@@ -341,8 +356,8 @@ class VirtualGPU : public device::VirtualDevice {
                             void* event_handle,  //!< Handle to OCL event for debugging
                             uint32_t sharedMemBytes = 0, //!< Shared memory size
                             amd::NDRangeKernelCommand* vcmd = nullptr, //!< Original launch command
-                            hsa_kernel_dispatch_packet_t* aql_packet = nullptr  //!< Scheduler launch
-                            );
+                            hsa_kernel_dispatch_packet_t* aql_packet = nullptr,  //!< Scheduler launch
+                            bool attach_signal = false);
   void submitNativeFn(amd::NativeFnCommand& cmd);
   void submitMarker(amd::Marker& cmd);
   void submitAccumulate(amd::AccumulateCommand& cmd);
@@ -353,6 +368,7 @@ class VirtualGPU : public device::VirtualDevice {
   void flush(amd::Command* list = nullptr, bool wait = false);
   void submitFillMemory(amd::FillMemoryCommand& cmd);
   void submitStreamOperation(amd::StreamOperationCommand& cmd);
+  void submitBatchMemoryOperation(amd::BatchMemoryOperationCommand& cmd);
   void submitVirtualMap(amd::VirtualMapCommand& cmd);
   void submitMigrateMemObjects(amd::MigrateMemObjectsCommand& cmd);
 
@@ -420,7 +436,10 @@ class VirtualGPU : public device::VirtualDevice {
 
   void hasPendingDispatch() { hasPendingDispatch_ = true; }
   bool IsPendingDispatch() const { return (hasPendingDispatch_) ? true : false; }
-  void addSystemScope() { addSystemScope_ = true; }
+  void addSystemScope() {
+    addSystemScope_ = true;
+    fence_state_ = amd::Device::CacheState::kCacheStateInvalid;
+  }
   void SetCopyCommandType(cl_command_type type) { copy_command_type_ = type; }
 
   HwQueueTracker& Barriers() { return barriers_; }
@@ -444,11 +463,12 @@ class VirtualGPU : public device::VirtualDevice {
                                 amd::AccumulateCommand* vcmd = nullptr);
   bool dispatchAqlPacket(hsa_kernel_dispatch_packet_t* packet, uint16_t header, uint16_t rest,
                          bool blocking = true, bool capturing = false,
-                         const uint8_t* aqlPacket = nullptr);
+                         const uint8_t* aqlPacket = nullptr, bool attach_signal = false);
   bool dispatchAqlPacket(hsa_barrier_and_packet_t* packet, uint16_t header,
-                        uint16_t rest, bool blocking = true);
+                        uint16_t rest, bool blocking = true, bool attach_signal = false);
   template <typename AqlPacket> bool dispatchGenericAqlPacket(AqlPacket* packet, uint16_t header,
-                                                              uint16_t rest, bool blocking);
+                                                              uint16_t rest, bool blocking,
+                                                              bool attach_signal = false);
 
   bool dispatchCounterAqlPacket(hsa_ext_amd_aql_pm4_packet_t* packet, const uint32_t gfxVersion,
                                 bool blocking, const hsa_ven_amd_aqlprofile_1_00_pfn_t* extApi);
@@ -465,13 +485,8 @@ class VirtualGPU : public device::VirtualDevice {
   void initializeDispatchPacket(hsa_kernel_dispatch_packet_t* packet,
                                 amd::NDRangeContainer& sizes);
 
-  bool initPool(size_t kernarg_pool_size);
-  void destroyPool();
-
   void resetKernArgPool() {
-    kernarg_pool_cur_offset_ = 0;
-    kernarg_pool_chunk_end_ = kernarg_pool_size_ / KernelArgPoolNumSignal;
-    active_chunk_ = 0;
+    managed_kernarg_buffer_.ResetPool();
   }
 
   uint64_t getVQVirtualAddress();
@@ -551,17 +566,8 @@ class VirtualGPU : public device::VirtualDevice {
 
   HwQueueTracker  barriers_;      //!< Tracks active barriers in ROCr
 
-  //!< The number of chunks the kernel arg pool will be divided
-  static constexpr uint32_t KernelArgPoolNumSignal = 4;
-  address   kernarg_pool_base_;
-  uint32_t  kernarg_pool_size_;
-  uint32_t  kernarg_pool_chunk_end_;    //!< The end offset of the current chunck
-  uint32_t  active_chunk_;              //!< The index of the current active chunk
-  uint32_t  kernarg_pool_cur_offset_;
-  std::vector<hsa_signal_t> kernarg_pool_signal_; //!< Pool of HSA signals to manage
-                                                  //!< multiple chunks
-
   ManagedBuffer managed_buffer_;  //!< Memory manager for staging copies
+  ManagedBuffer managed_kernarg_buffer_; //!< Managed memory for kernel args
 
   friend class Timestamp;
 

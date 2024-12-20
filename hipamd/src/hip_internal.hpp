@@ -24,7 +24,7 @@
 #include "vdi_common.hpp"
 #include "hip_prof_api.h"
 #include "trace_helper.h"
-#include "utils/debug.hpp"
+#include "rocclr/utils/debug.hpp"
 #include "hip_formatting.hpp"
 #include "hip_graph_capture.hpp"
 
@@ -488,7 +488,7 @@ public:
     // Device lock
     amd::Monitor lock_{true};
     // Guards device stream set
-    amd::Monitor streamSetLock{};
+    std::shared_mutex streamSetLock;
     std::unordered_set<hip::Stream*> streamSet;
     /// ROCclr context
     amd::Context* context_;
