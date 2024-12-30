@@ -25,6 +25,8 @@
 #define ATI_ARCH_ARM
 #elif defined(i386) || defined(__i386) || defined(__i386__) || defined(_M_IX86) || defined(__x86__) || defined(__x86_64) || defined(__x86_64__) || defined(__amd64) || defined(__amd64__) || defined(_M_X64) || defined(_M_AMD64)
 #define ATI_ARCH_X86
+#elif defined(__riscv)
+#define ATI_ARCH_RISCV
 #endif
 
 #if defined(ATI_ARCH_ARM)
