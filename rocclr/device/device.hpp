@@ -57,6 +57,7 @@
 #include <set>
 #include <unordered_set>
 #include <utility>
+#include <shared_mutex>
 
 namespace amd {
 class Command;
@@ -1358,27 +1359,32 @@ namespace amd {
 //! MemoryObject map lookup  class
 class MemObjMap : public AllStatic {
  public:
-  static size_t size();  //!< obtain the size of the container
-  static void AddMemObj(const void* k,
-                        amd::Memory* v);  //!< add the host mem pointer and buffer in the container
-  static void RemoveMemObj(const void* k);  //!< Remove an entry of mem object from the container
-  static amd::Memory* FindMemObj(
-      const void* k,              //!< find the mem object based on the input pointer
-      size_t* offset = nullptr);  //!< Offset in the memory location
-  static void UpdateAccess(amd::Device *peerDev);
-  static void Purge(amd::Device* dev); //!< Purge all user allocated memories on the given device
+  //!< add the host mem pointer and buffer in the container
+  static void AddMemObj(const void* k, amd::Memory* v);
 
-  static void AddVirtualMemObj(const void* k,
-                               amd::Memory* v);  //!< Same as AddMemObj but for virtual addressing
-  static void RemoveVirtualMemObj(const void* k);  //!< Same as RemoveMemObj but for virtual addressing
-  static amd::Memory* FindVirtualMemObj(
-      const void* k);  //!< Same as FindMemObj but for virtual addressing
+  //!< Remove an entry of mem object from the container
+  static void RemoveMemObj(const void* k);
+
+  //!< Find the mem object based on the input pointer, outputs the offset
+  static amd::Memory* FindMemObj( const void* k, size_t* offset = nullptr);
+  static void UpdateAccess(amd::Device *peerDev);
+  //!< Purge all user allocated memories on the given device
+  static void Purge(amd::Device* dev);
+  //!< Same as AddMemObj but for virtual addressing
+  static void AddVirtualMemObj(const void* k, amd::Memory* v);
+
+  //!< Same as RemoveMemObj but for virtual addressing
+  static void RemoveVirtualMemObj(const void* k);
+  //!< Same as FindMemObj but for virtual addressing
+  static amd::Memory* FindVirtualMemObj(const void* k);
+
  private:
-  static std::map<uintptr_t, amd::Memory*>
-      MemObjMap_;                      //!< the mem object<->hostptr information container
-  static std::map<uintptr_t, amd::Memory*>
-      VirtualMemObjMap_;               //!< the virtual mem object<->hostptr information container
-  static amd::Monitor AllocatedLock_;  //!< amd monitor locker
+  //!< the mem object<->hostptr information container
+  static std::map<uintptr_t, amd::Memory*> MemObjMap_;
+  //!< the virtual mem object<->hostptr information container
+  static std::map<uintptr_t, amd::Memory*> VirtualMemObjMap_;
+  //!< Shared read/write lock
+  static std::shared_mutex AllocatedLock_;
 };
 
 /// @brief Instruction Set Architecture properties.
