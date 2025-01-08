@@ -3125,7 +3125,7 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes,
             syncInfo->mgs = reinterpret_cast<Device::MGSyncData*>(dev().MGSync() +
                             Device::kMGInfoSizePerDevice * vcmd->firstDevice());
           } else if (singleGridSync) {
-            syncInfo = reinterpret_cast<Device::MGSyncInfo*>(allocKernArg(Device::kSGInfoSize, 64));
+            syncInfo = reinterpret_cast<Device::MGSyncInfo*>(allocKernArg(sizeof(Device::MGSyncInfo), 64));
             syncInfo->mgs = nullptr;
           }
           if (multiGridSync || singleGridSync) {
