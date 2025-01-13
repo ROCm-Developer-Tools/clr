@@ -163,6 +163,9 @@ void __hipRegisterManagedVar(
     } else {
       ClPrint(amd::LOG_ERROR, amd::LOG_API, "Host Queue is NULL");
     }
+  } else if (status == hipErrorNoDevice) {
+    *pointer = nullptr;
+    size = 0;
   } else {
     guarantee(false, "Error during allocation of managed memory!, error: %d", status);
   }

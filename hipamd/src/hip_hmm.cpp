@@ -287,6 +287,10 @@ hipError_t ihipMallocManaged(void** ptr, size_t size, unsigned int align) {
   assert((hip::host_context != nullptr) && "Current host context must be valid");
   amd::Context& ctx = *hip::host_context;
 
+  if (ctx.devices().size() == 0) {
+    return hipErrorNoDevice;
+  }
+
   const amd::Device& dev = *ctx.devices()[0];
 
   // Allocate SVM fine grain buffer with the forced host pointer, avoiding explicit memory
