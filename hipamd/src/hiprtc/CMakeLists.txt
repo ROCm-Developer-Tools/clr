@@ -132,9 +132,8 @@ add_to_config(_versionInfo HIP_VERSION_GITHASH)
 
 # Enable preprocessed hiprtc-builtins library
 include(HIPRTC RESULT_VARIABLE HIPRTC_CMAKE)
-# Requires clang and llvm-mc to create this library.
+# Requires clang and to create this library.
 find_program(clang clang HINTS ${ROCM_PATH}/llvm/bin ${ROCM_PATH})
-find_program(llvm-mc llvm-mc HINTS ${ROCM_PATH}/llvm/bin ${ROCM_PATH})
 set(HIPRTC_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/hip_rtc_gen")
 set(HIPRTC_GEN_HEADER "${HIPRTC_GEN_DIR}/hipRTC_header.h")
 set(HIPRTC_GEN_MCIN "${HIPRTC_GEN_DIR}/hipRTC_header.mcin")
@@ -184,8 +183,8 @@ add_custom_command(
   DEPENDS ${clang} ${HIPRTC_GEN_HEADER})
 add_custom_command(
   OUTPUT ${HIPRTC_GEN_OBJ}
-  COMMAND ${llvm-mc} -o ${HIPRTC_GEN_OBJ} ${HIPRTC_GEN_MCIN} --filetype=obj
-  DEPENDS ${llvm-mc} ${HIPRTC_GEN_PREPROCESSED} ${HIPRTC_GEN_MCIN})
+  COMMAND ${clang} -o ${HIPRTC_GEN_OBJ} -x assembler ${HIPRTC_GEN_MCIN} -c
+  DEPENDS ${clang} ${HIPRTC_GEN_PREPROCESSED} ${HIPRTC_GEN_MCIN})
 
 # Create hiprtc-builtins library.
 add_library(hiprtc-builtins ${HIPRTC_GEN_OBJ})
@@ -206,7 +205,7 @@ if(WIN32)
   set_target_properties(hiprtc-builtins PROPERTIES
     OUTPUT_NAME "hiprtc-builtins${HIP_MAJOR_VERSION}${HIP_MINOR_VERSION}"
     ARCHIVE_OUTPUT_NAME "hiprtc-builtins")
-  # Since ${HIPRTC_GEN_OBJ} was manually generated with llvm-mc, /MT did not embed
+  # Since ${HIPRTC_GEN_OBJ} was manually generated with `clang -x assembler -c`, /MT did not embed
   # libcmt.lib inside of the obj. So we need to manually set it as defaultlib.
   target_link_options(hiprtc-builtins PRIVATE "LINKER:/DEFAULTLIB:libcmt")
 else()
