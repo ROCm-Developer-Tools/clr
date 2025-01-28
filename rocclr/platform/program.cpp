@@ -132,7 +132,7 @@ int32_t Program::addDeviceProgram(Device& device, const void* image, size_t leng
   Device& rootDev = device;
 
   // if the rootDev is already associated with a program
-  if (devicePrograms_[&rootDev] != NULL) {
+  if (getDeviceProgram(rootDev) != NULL) {
     return CL_SUCCESS;
   }
 
@@ -612,11 +612,16 @@ bool Program::load(const std::vector<Device*>& devices) {
     }
 
     if (!devProgram.load()) {
+      if (!devProgram.buildLog().empty()) {
+        LogPrintfError("devProgram.load() failed with buildLog=%s\n",
+            devProgram.buildLog().c_str());
+      }
       return false;
     }
 
     // Run kernels marked with init
     if (!devProgram.runInitKernels()) {
+      LogError("runInitKernels() failed\n");
       return false;
     }
   }

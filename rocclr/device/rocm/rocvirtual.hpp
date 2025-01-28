@@ -31,6 +31,7 @@
 #include "hsa/hsa_ven_amd_aqlprofile.h"
 #include "rocsched.hpp"
 #include "device/device.hpp"
+#include <stack>
 
 namespace amd::roc {
 class Device;
@@ -111,8 +112,9 @@ class Timestamp : public amd::ReferenceCountedObject {
   std::vector<ProfilingSignal*> signals_; //!< The list of all signals, associated with the TS
   hsa_signal_t callback_signal_;  //!< Signal associated with a callback for possible later update
   amd::Monitor  lock_;            //!< Serialize timestamp update
-  bool        accum_ena_ = false; //!< If TRUE then the accumulation of execution times has started
-  bool        hasHwProfiling_ = false; //!< If TRUE then HwProfiling is enabled for the command
+  bool accum_ena_ = false;        //!< If TRUE then the accumulation of execution times has started
+  bool hasHwProfiling_ = false;   //!< If TRUE then HwProfiling is enabled for the command
+  bool blocking_ = true;          //!< If TRUE callback is blocking
 
   Timestamp(const Timestamp&) = delete;
   Timestamp& operator=(const Timestamp&) = delete;
@@ -176,12 +178,15 @@ class Timestamp : public amd::ReferenceCountedObject {
   VirtualGPU* gpu() const { return gpu_; }
 
   //! Updates the callback signal
-  void SetCallbackSignal(hsa_signal_t callback_signal) {
+  void SetCallbackSignal(hsa_signal_t callback_signal, bool blocking = true) {
     callback_signal_ = callback_signal;
+    blocking_ = blocking;
   }
-
   //! Returns the callback signal
   hsa_signal_t GetCallbackSignal() const { return callback_signal_; }
+
+  //! Return if callback is blocking/non-blocking
+  bool GetBlocking() { return blocking_; }
 };
 
 class VirtualGPU : public device::VirtualDevice {
@@ -197,10 +202,16 @@ class VirtualGPU : public device::VirtualDevice {
     ~ManagedBuffer();
 
     //! Allocates all necessary resources to manage memory
-    bool Create();
+    bool Create(amd::Device::MemorySegment mem_segment);
 
     //! Acquires memory for use on the gpu
     address Acquire(uint32_t size);
+
+    //! Acquires custom aligned memory for use on the gpu
+    address Acquire(uint32_t size, uint32_t alignment);
+
+    //! Reset mem pool
+    void ResetPool();
 
   private:
     VirtualGPU& gpu_;                 //!< Queue object for ROCm device
@@ -297,7 +308,11 @@ class VirtualGPU : public device::VirtualDevice {
       sdma_profiling_ = profile;
       hsa_amd_profiling_async_copy_enable(profile);
     }
+
   private:
+    //! Creates HSA signal with the specified scope
+    bool CreateSignal(ProfilingSignal* signal, bool interrupt = false) const;
+
     //! Wait for the next active signal
     void WaitNext() {
       size_t next = (current_id_ + 1) % signal_list_.size();
@@ -309,6 +324,8 @@ class VirtualGPU : public device::VirtualDevice {
     bool CpuWaitForSignal(ProfilingSignal* signal);
 
     HwQueueEngine engine_ = HwQueueEngine::Unknown; //!< Engine used in the current operations
+    std::stack<ProfilingSignal*> signal_pool_irq_;  //!< The pool of free signals with interrupts
+    std::stack<ProfilingSignal*> signal_pool_;      //!< The pool of free signals without interrupt
     std::vector<ProfilingSignal*> signal_list_;     //!< The pool of all signals for processing
     size_t current_id_ = 0;       //!< Last submitted signal
     bool sdma_profiling_ = false; //!< If TRUE, then SDMA profiling is enabled
@@ -355,6 +372,7 @@ class VirtualGPU : public device::VirtualDevice {
   void flush(amd::Command* list = nullptr, bool wait = false);
   void submitFillMemory(amd::FillMemoryCommand& cmd);
   void submitStreamOperation(amd::StreamOperationCommand& cmd);
+  void submitBatchMemoryOperation(amd::BatchMemoryOperationCommand& cmd);
   void submitVirtualMap(amd::VirtualMapCommand& cmd);
   void submitMigrateMemObjects(amd::MigrateMemObjectsCommand& cmd);
 
@@ -471,13 +489,8 @@ class VirtualGPU : public device::VirtualDevice {
   void initializeDispatchPacket(hsa_kernel_dispatch_packet_t* packet,
                                 amd::NDRangeContainer& sizes);
 
-  bool initPool(size_t kernarg_pool_size);
-  void destroyPool();
-
   void resetKernArgPool() {
-    kernarg_pool_cur_offset_ = 0;
-    kernarg_pool_chunk_end_ = kernarg_pool_size_ / KernelArgPoolNumSignal;
-    active_chunk_ = 0;
+    managed_kernarg_buffer_.ResetPool();
   }
 
   uint64_t getVQVirtualAddress();
@@ -557,17 +570,8 @@ class VirtualGPU : public device::VirtualDevice {
 
   HwQueueTracker  barriers_;      //!< Tracks active barriers in ROCr
 
-  //!< The number of chunks the kernel arg pool will be divided
-  static constexpr uint32_t KernelArgPoolNumSignal = 4;
-  address   kernarg_pool_base_;
-  uint32_t  kernarg_pool_size_;
-  uint32_t  kernarg_pool_chunk_end_;    //!< The end offset of the current chunck
-  uint32_t  active_chunk_;              //!< The index of the current active chunk
-  uint32_t  kernarg_pool_cur_offset_;
-  std::vector<hsa_signal_t> kernarg_pool_signal_; //!< Pool of HSA signals to manage
-                                                  //!< multiple chunks
-
   ManagedBuffer managed_buffer_;  //!< Memory manager for staging copies
+  ManagedBuffer managed_kernarg_buffer_; //!< Managed memory for kernel args
 
   friend class Timestamp;
 

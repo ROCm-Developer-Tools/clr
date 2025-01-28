@@ -72,8 +72,9 @@ bool Stream::Create() {
 }
 
 // ================================================================================================
-void Stream::Destroy(hip::Stream* stream) {
+void Stream::Destroy(hip::Stream* stream, bool forceDestroy) {
   stream->device_->RemoveStream(stream);
+  stream->SetForceDestroy(forceDestroy);
   stream->release();
   stream = nullptr;
 }
@@ -360,10 +361,7 @@ hipError_t hipStreamSynchronize_common(hipStream_t stream) {
   if (stream == nullptr) {
     // Do cpu wait on null stream and only on blocking streams
     constexpr bool WaitblockingStreamOnly = true;
-    getCurrentDevice()->SyncAllStreams(true, WaitblockingStreamOnly);
-
-    // Release freed memory for all memory pools on the device
-    getCurrentDevice()->ReleaseFreedMemory();
+    getCurrentDevice()->SyncAllStreams(false, WaitblockingStreamOnly);
   } else {
     constexpr bool wait = false;
     auto hip_stream = hip::getStream(stream, wait);
@@ -396,7 +394,7 @@ hipError_t hipStreamDestroy(hipStream_t stream) {
   if (stream == nullptr) {
     HIP_RETURN(hipErrorInvalidHandle);
   }
-  if (stream == hipStreamPerThread) {
+  if (stream == hipStreamPerThread || stream == hipStreamLegacy) {
     HIP_RETURN(hipErrorInvalidResourceHandle);
   }
   if (!hip::isValid(stream)) {
@@ -487,7 +485,8 @@ hipError_t hipStreamWaitEvent_common(hipStream_t stream, hipEvent_t event, unsig
         // If stream is capturing but event is not recorded on event's stream.
         return hipErrorStreamCaptureIsolation;
       }
-      if ((waitStream != nullptr) && (eventStream->DeviceId() == waitStream->DeviceId())) {
+      if ((waitStream != nullptr && stream != hipStreamLegacy) &&
+          (eventStream->DeviceId() == waitStream->DeviceId())) {
         eventStream->GetDevice()->AddSafeStream(eventStream, waitStream);
       }
     }

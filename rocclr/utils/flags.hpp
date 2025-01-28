@@ -92,7 +92,7 @@ release(size_t, GPU_XFER_BUFFER_SIZE, 0,                                      \
         "Transfer buffer size for image copy optimization in KB")             \
 release(bool, GPU_IMAGE_DMA, true,                                            \
         "Enable DRM DMA for image transfers")                                 \
-release(uint, GPU_SINGLE_ALLOC_PERCENT, 85,                                   \
+release(uint, GPU_SINGLE_ALLOC_PERCENT, 100,                                  \
         "Maximum size of a single allocation as percentage of total")         \
 release(uint, GPU_NUM_COMPUTE_RINGS, 2,                                       \
         "GPU number of compute rings. 0 - disabled, 1 , 2,.. - the number of compute rings") \
@@ -176,7 +176,7 @@ release(uint, HIP_LAUNCH_BLOCKING, 0,                                         \
 release(bool, PAL_ALWAYS_RESIDENT, false,                                     \
         "Force memory resources to become resident at allocation time")       \
 release(uint, HIP_HOST_COHERENT, 0,                                           \
-        "Coherent memory in hipExtHostAlloc, 0x1 = memory is coherent with host"\
+        "Coherent memory in hipHostMalloc, 0x1 = memory is coherent with host"\
         "0x0 = memory is not coherent between host and GPU")                  \
 release(uint, AMD_OPT_FLUSH, 1,                                               \
         "Kernel flush option , 0x0 = Use system-scope fence operations."      \
@@ -269,6 +269,8 @@ release(bool, DEBUG_CLR_USE_STDMUTEX_IN_AMD_MONITOR, false,                   \
         "Use std::mutex in amd::monitor")                                     \
 release(bool, DEBUG_CLR_KERNARG_HDP_FLUSH_WA, false,                          \
         "Toggle kernel arg copy workaround")                                  \
+release(bool, DEBUG_CLR_SKIP_RELEASE_SCOPE, false,                            \
+        "Forces release scope to SCOPE_NONE for aql packets")                 \
 release(uint, DEBUG_HIP_7_PREVIEW, 0,                                         \
         "Enables specific backward incompatible changes support before 7.0,"  \
         "using the mask. By default the changes are disabled and is set to 0")\

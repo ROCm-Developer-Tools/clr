@@ -30,9 +30,6 @@ THE SOFTWARE.
   #define __HOST_DEVICE__ __host__ __device__
   #include <hip/amd_detail/amd_hip_common.h>
   #include "hip/amd_detail/host_defines.h"
-#if defined(__clang__) && defined(__HIP__)
-  #include "hip/amd_detail/amd_hip_atomic.h"
-#endif // defined(__clang__) && defined(__HIP__)
   #include <assert.h>
   #if defined(__cplusplus)
     #include <algorithm>
@@ -1558,6 +1555,28 @@ THE SOFTWARE.
                 return old_val.h2r;
             #endif
             }
+            inline __device__ __half unsafeAtomicAdd(__half* address, __half value) {
+                static_assert(sizeof(unsigned short int) == sizeof(__half_raw));
+                unsigned short int* address_as_short = reinterpret_cast<unsigned short int *>(address);
+                // Align to 4 bytes
+                unsigned int* aligned_addr = __builtin_bit_cast(unsigned int*,
+                                             __builtin_bit_cast(unsigned long long int, address_as_short)
+                                             & (unsigned long long int)(~0x3));
+
+                bool is_lower = __builtin_bit_cast(unsigned long long int, aligned_addr) ==
+                                __builtin_bit_cast(unsigned long long int, address);
+                __half2 fval;
+                if (is_lower)
+                  fval = __halves2half2(value, __float2half(0.0f));
+                else
+                  fval = __halves2half2(__float2half(0.0f), value);
+
+                __half2 *in = (__half2 *)(aligned_addr);
+                __half2 out =  unsafeAtomicAdd(in , fval);
+                if (is_lower)
+                   return __low2half(out);
+                return __high2half(out);
+            }
             #endif // defined(__clang__) && defined(__HIP__)
 
             // Math functions
@@ -1679,8 +1698,9 @@ THE SOFTWARE.
             __HOST_DEVICE__
             bool __hisinf(__half x)
             {
-                // +Inf/-Inf
-                return x == HIPRT_INF_FP16 || x == __ushort_as_half((unsigned short)0xFC00U);
+                __half_raw hr = x;
+                // +/-Inf
+                return hr.x == 0x7C00U || hr.x == 0xFC00U;
             }
             inline
             __HOST_DEVICE__

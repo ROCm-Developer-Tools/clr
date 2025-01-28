@@ -62,7 +62,8 @@ std::unordered_set<Graph*> Graph::graphSet_;
 amd::Monitor Graph::graphSetLock_{};
 std::unordered_set<GraphExec*> GraphExec::graphExecSet_;
 // Guards global exec graph set
-amd::Monitor GraphExec::graphExecSetLock_{};
+// we have graphExec object as part of child graph and we need recursive lock
+amd::Monitor GraphExec::graphExecSetLock_(true);
 std::unordered_set<UserObject*> UserObject::ObjectSet_;
 // Guards global user object
 amd::Monitor UserObject::UserObjectLock_{};
@@ -93,6 +94,7 @@ hipError_t GraphMemcpyNode1D::ValidateParams(void* dst, const void* src, size_t 
   return hipSuccess;
 }
 
+// ================================================================================================
 hipError_t GraphMemcpyNode::ValidateParams(const hipMemcpy3DParms* pNodeParams) {
   hipError_t status;
   status = ihipMemcpy3D_validate(pNodeParams);
@@ -108,6 +110,7 @@ hipError_t GraphMemcpyNode::ValidateParams(const hipMemcpy3DParms* pNodeParams) 
   return hipSuccess;
 }
 
+// ================================================================================================
 bool Graph::isGraphValid(Graph* pGraph) {
   amd::ScopedLock lock(graphSetLock_);
   if (graphSet_.find(pGraph) == graphSet_.end()) {
@@ -116,6 +119,7 @@ bool Graph::isGraphValid(Graph* pGraph) {
   return true;
 }
 
+// ================================================================================================
 void Graph::AddNode(const Node& node) {
   vertices_.emplace_back(node);
   ClPrint(amd::LOG_INFO, amd::LOG_CODE, "[hipGraph] Add %s(%p)",
@@ -123,11 +127,13 @@ void Graph::AddNode(const Node& node) {
   node->SetParentGraph(this);
 }
 
+// ================================================================================================
 void Graph::RemoveNode(const Node& node) {
   vertices_.erase(std::remove(vertices_.begin(), vertices_.end(), node), vertices_.end());
   delete node;
 }
 
+// ================================================================================================
 // root nodes are all vertices with 0 in-degrees
 std::vector<Node> Graph::GetRootNodes() const {
   std::vector<Node> roots;
@@ -141,6 +147,7 @@ std::vector<Node> Graph::GetRootNodes() const {
   return roots;
 }
 
+// ================================================================================================
 // leaf nodes are all vertices with 0 out-degrees
 std::vector<Node> Graph::GetLeafNodes() const {
   std::vector<Node> leafNodes;
@@ -152,6 +159,7 @@ std::vector<Node> Graph::GetLeafNodes() const {
   return leafNodes;
 }
 
+// ================================================================================================
 size_t Graph::GetLeafNodeCount() const {
   int numLeafNodes = 0;
   for (auto entry : vertices_) {
@@ -179,20 +187,13 @@ void Graph::ScheduleOneNode(Node node, int stream_id) {
     node->stream_id_ = stream_id;
     max_streams_ = std::max(max_streams_, (stream_id + 1));
 
-    // Update the dependencies if a signal is required
-    for (auto dep: node->GetDependencies()) {
-      // Check if the stream ID doesn't match and enable signal
-      if (dep->stream_id_ != node->stream_id_) {
-        dep->signal_is_required_ |= true;
-      }
-    }
     // Process child graph separately, since, there is no connection
     if (node->GetType() == hipGraphNodeTypeGraph) {
-      auto child = reinterpret_cast<hip::ChildGraphNode*>(node)->childGraph_;
+      auto child = reinterpret_cast<hip::ChildGraphNode*>(node)->GetChildGraph();
       child->ScheduleNodes();
       max_streams_ = std::max(max_streams_, child->max_streams_);
       if (child->max_streams_ == 1) {
-        reinterpret_cast<hip::ChildGraphNode*>(node)->TopologicalOrder();
+        reinterpret_cast<hip::ChildGraphNode*>(node)->GraphExec::TopologicalOrder();
       }
     }
     for (auto edge: node->GetEdges()) {
@@ -236,6 +237,14 @@ bool Graph::TopologicalOrder(std::vector<Node>& TopoOrder) {
   std::queue<Node> q;
   std::unordered_map<Node, int> inDegree;
   for (auto entry : vertices_) {
+    // Update the dependencies if a signal is required
+    for (auto dep: entry->GetDependencies()) {
+      // Check if the stream ID doesn't match and enable signal
+      if (dep->stream_id_ != entry->stream_id_) {
+        dep->signal_is_required_ = true;
+      }
+    }
+
     if (entry->GetInDegree() == 0) {
       q.push(entry);
     }
@@ -259,13 +268,14 @@ bool Graph::TopologicalOrder(std::vector<Node>& TopoOrder) {
   return false;
 }
 
-Graph* Graph::clone(std::unordered_map<Node, Node>& clonedNodes) const {
-  Graph* newGraph = new Graph(device_, this);
-  for (auto entry : vertices_) {
+// ================================================================================================
+void Graph::clone(Graph* newGraph, bool cloneNodes) const {
+  newGraph->pOriginalGraph_ = this;
+  for (hip::GraphNode* entry : vertices_) {
     GraphNode* node = entry->clone();
     node->SetParentGraph(newGraph);
     newGraph->vertices_.push_back(node);
-    clonedNodes[entry] = node;
+    newGraph->clonedNodes_[entry] = node;
   }
 
   std::vector<Node> clonedEdges;
@@ -274,17 +284,17 @@ Graph* Graph::clone(std::unordered_map<Node, Node>& clonedNodes) const {
     const std::vector<Node>& edges = node->GetEdges();
     clonedEdges.clear();
     for (auto edge : edges) {
-      clonedEdges.push_back(clonedNodes[edge]);
+      clonedEdges.push_back(newGraph->clonedNodes_[edge]);
     }
-    clonedNodes[node]->SetEdges(clonedEdges);
+    newGraph->clonedNodes_[node]->SetEdges(clonedEdges);
   }
   for (auto node : vertices_) {
     const std::vector<Node>& dependencies = node->GetDependencies();
     clonedDependencies.clear();
     for (auto dep : dependencies) {
-      clonedDependencies.push_back(clonedNodes[dep]);
+      clonedDependencies.push_back(newGraph->clonedNodes_[dep]);
     }
-    clonedNodes[node]->SetDependencies(clonedDependencies);
+    newGraph->clonedNodes_[node]->SetDependencies(clonedDependencies);
   }
   for (auto& userObj : graphUserObj_) {
     userObj.first->retain();
@@ -297,14 +307,20 @@ Graph* Graph::clone(std::unordered_map<Node, Node>& clonedNodes) const {
   if (roots_.size() > 0) {
     memcpy(&newGraph->roots_[0], &roots_[0], sizeof(Node) * roots_.size());
   }
+  newGraph->memAllocNodePtrs_ = memAllocNodePtrs_;
+  if(!cloneNodes) {
+    newGraph->clonedNodes_.clear();
+  }
+}
+
+// ================================================================================================
+Graph* Graph::clone() const {
+  Graph* newGraph = new Graph(device_);
+  clone(newGraph);
   return newGraph;
 }
 
-Graph* Graph::clone() const {
-  std::unordered_map<Node, Node> clonedNodes;
-  return clone(clonedNodes);
-}
-
+// ================================================================================================
 bool GraphExec::isGraphExecValid(GraphExec* pGraphExec) {
   amd::ScopedLock lock(graphExecSetLock_);
   if (graphExecSet_.find(pGraphExec) == graphExecSet_.end()) {
@@ -313,6 +329,7 @@ bool GraphExec::isGraphExecValid(GraphExec* pGraphExec) {
   return true;
 }
 
+// ================================================================================================
 hipError_t GraphExec::CreateStreams(uint32_t num_streams) {
   parallel_streams_.reserve(num_streams);
   for (uint32_t i = 0; i < num_streams; ++i) {
@@ -337,7 +354,7 @@ hipError_t GraphExec::CreateStreams(uint32_t num_streams) {
 hipError_t GraphExec::Init() {
   hipError_t status = hipSuccess;
   // create extra stream to avoid queue collision with the default execution stream
-  status = CreateStreams(clonedGraph_->max_streams_);
+  status = CreateStreams(max_streams_);
   if (status != hipSuccess) {
     return status;
   }
@@ -346,50 +363,53 @@ hipError_t GraphExec::Init() {
     status = CaptureAQLPackets();
   }
   instantiateDeviceId_ = hip::getCurrentDevice()->deviceId();
+  static_cast<ReferenceCountedObject*>( hip::getCurrentDevice())->retain();
   return status;
 }
 
 //! Chunk size to add to kern arg pool
 constexpr uint32_t kKernArgChunkSize = 128 * Ki;
 // ================================================================================================
-void GetKernelArgSizeForGraph(std::vector<hip::Node>& topoOrder,
-                              size_t& kernArgSizeForGraph) {
+void GraphExec::GetKernelArgSizeForGraph(size_t& kernArgSizeForGraph) {
   // GPU packet capture is enabled for kernel nodes. Calculate the kernel
   // arg size required for all graph kernel nodes to allocate
-  for (hip::GraphNode* node : topoOrder) {
+  for (hip::GraphNode* node : topoOrder_) {
     if (node->GraphCaptureEnabled()) {
       kernArgSizeForGraph += node->GetKerArgSize();
     } else if (node->GetType() == hipGraphNodeTypeGraph) {
-      if (reinterpret_cast<hip::ChildGraphNode*>(node)->childGraph_->max_streams_ == 1) {
-        GetKernelArgSizeForGraph(reinterpret_cast<hip::ChildGraphNode*>(node)->childGraphNodeOrder_,
-                                 kernArgSizeForGraph);
+      auto childNode = reinterpret_cast<hip::ChildGraphNode*>(node);
+      // Child graph shares same kernel arg manager
+      GraphKernelArgManager* KernelArgManager = GetKernelArgManager();
+      KernelArgManager->retain();
+      childNode->SetKernelArgManager(KernelArgManager);
+      // Set capture stream for child graph
+      childNode->capture_stream_ = capture_stream_;
+      if (childNode->GetChildGraph()->max_streams_ == 1) {
+        childNode->GetKernelArgSizeForGraph(kernArgSizeForGraph);
       }
     }
   }
 }
 
 // ================================================================================================
-hipError_t AllocKernelArgForGraphNode(std::vector<hip::Node>& topoOrder,
-                                      hip::Stream* capture_stream, hip::GraphExec* graphExec) {
+hipError_t GraphExec::AllocKernelArgForGraphNode() {
   hipError_t status = hipSuccess;
-  for (auto& node : topoOrder) {
+  for (auto& node : topoOrder_) {
     if (node->GetType() == hipGraphNodeTypeKernel) {
       // Check if graph requires hidden heap and set as part of graphExec param.
       static bool initialized = false;
       if (!initialized && reinterpret_cast<hip::GraphKernelNode*>(node)->HasHiddenHeap()) {
-        graphExec->SetHiddenHeap();
+        SetHiddenHeap();
         initialized = true;
       }
     }
     if (node->GraphCaptureEnabled()) {
-      node->CaptureAndFormPacket(capture_stream, graphExec->GetKernelArgManager());
+      status = node->CaptureAndFormPacket(capture_stream_, GetKernelArgManager());
     } else if (node->GetType() == hipGraphNodeTypeGraph) {
       auto childNode = reinterpret_cast<hip::ChildGraphNode*>(node);
-      if (childNode->childGraph_->max_streams_ == 1) {
+      if (childNode->GetChildGraph()->max_streams_ == 1) {
         childNode->SetGraphCaptureStatus(true);
-        status =
-            AllocKernelArgForGraphNode(childNode->GetChildGraphNodeOrder(),
-                                       capture_stream, graphExec);
+        status = childNode->AllocKernelArgForGraphNode();
         if (status != hipSuccess) {
           return status;
         }
@@ -402,9 +422,9 @@ hipError_t AllocKernelArgForGraphNode(std::vector<hip::Node>& topoOrder,
 // ================================================================================================
 hipError_t GraphExec::CaptureAQLPackets() {
   hipError_t status = hipSuccess;
-  if (clonedGraph_->max_streams_ == 1) {
+  if (max_streams_ == 1) {
     size_t kernArgSizeForGraph = 0;
-    GetKernelArgSizeForGraph(topoOrder_, kernArgSizeForGraph);
+    GetKernelArgSizeForGraph(kernArgSizeForGraph);
     auto device = g_devices[ihipGetDevice()]->devices()[0];
     // Add a larger initial pool to accomodate for any updates to kernel args
     bool bStatus = kernArgManager_->AllocGraphKernargPool(kernArgSizeForGraph + kKernArgChunkSize);
@@ -412,7 +432,7 @@ hipError_t GraphExec::CaptureAQLPackets() {
       return hipErrorMemoryAllocation;
     }
 
-    status = AllocKernelArgForGraphNode(topoOrder_, capture_stream_, this);
+    status = AllocKernelArgForGraphNode();
     if (status != hipSuccess) {
       return status;
     }
@@ -424,10 +444,10 @@ hipError_t GraphExec::CaptureAQLPackets() {
 // ================================================================================================
 hipError_t GraphExec::UpdateAQLPacket(hip::GraphNode* node) {
   hipError_t status = hipSuccess;
-  if (clonedGraph_->max_streams_ == 1) {
-    node->CaptureAndFormPacket(capture_stream_, kernArgManager_);
+  if (max_streams_ == 1) {
+    status = node->CaptureAndFormPacket(capture_stream_, kernArgManager_);
   }
-  return hipSuccess;
+  return status;
 }
 
 // ================================================================================================
@@ -439,8 +459,7 @@ void GraphExec::DecrementRefCount(cl_event event, cl_int command_exec_status, vo
 
 // ================================================================================================
 
-hipError_t EnqueueGraphWithSingleList(std::vector<hip::Node>& topoOrder, hip::Stream* hip_stream,
-                                      hip::GraphExec* graphExec) {
+hipError_t GraphExec::EnqueueGraphWithSingleList(hip::Stream* hip_stream) {
   // Accumulate command tracks all the AQL packet batch that we submit to the HW. For now
   // we track only kernel nodes.
   amd::AccumulateCommand* accumulate = nullptr;
@@ -448,18 +467,18 @@ hipError_t EnqueueGraphWithSingleList(std::vector<hip::Node>& topoOrder, hip::St
   if (DEBUG_CLR_GRAPH_PACKET_CAPTURE) {
     accumulate = new amd::AccumulateCommand(*hip_stream, {}, nullptr);
   }
-  for (int i = 0; i < topoOrder.size(); i++) {
-    if (topoOrder[i]->GraphCaptureEnabled()) {
-      if (topoOrder[i]->GetEnabled()) {
-        std::vector<uint8_t*>& gpuPackets = topoOrder[i]->GetAqlPackets();
+  for (int i = 0; i < topoOrder_.size(); i++) {
+    if (topoOrder_[i]->GraphCaptureEnabled()) {
+      if (topoOrder_[i]->GetEnabled()) {
+        std::vector<uint8_t*>& gpuPackets = topoOrder_[i]->GetAqlPackets();
         for (auto& packet : gpuPackets) {
-          hip_stream->vdev()->dispatchAqlPacket(packet, topoOrder[i]->GetKernelName(), accumulate);
+          hip_stream->vdev()->dispatchAqlPacket(packet, topoOrder_[i]->GetKernelName(), accumulate);
         }
       }
     } else {
-      topoOrder[i]->SetStream(hip_stream, graphExec);
-      status = topoOrder[i]->CreateCommand(topoOrder[i]->GetQueue());
-      topoOrder[i]->EnqueueCommands(hip_stream);
+      topoOrder_[i]->SetStream(hip_stream);
+      status = topoOrder_[i]->CreateCommand(topoOrder_[i]->GetQueue());
+      topoOrder_[i]->EnqueueCommands(hip_stream);
     }
   }
 
@@ -529,7 +548,7 @@ bool Graph::RunOneNode(Node node, bool wait) {
     }
     if (node->GetType() == hipGraphNodeTypeGraph) {
       // Process child graph separately, since, there is no connection
-      auto child = reinterpret_cast<hip::ChildGraphNode*>(node)->childGraph_;
+      auto child = reinterpret_cast<hip::ChildGraphNode*>(node)->GetChildGraph();
       if (!reinterpret_cast<hip::ChildGraphNode*>(node)->graphCaptureStatus_) {
         child->RunNodes(node->stream_id_, &streams_, &waitList);
       }
@@ -682,7 +701,7 @@ hipError_t GraphExec::Run(hipStream_t graph_launch_stream) {
     repeatLaunch_ = true;
   }
 
-  if (clonedGraph_->max_streams_ == 1 && instantiateDeviceId_ == launch_stream->DeviceId()) {
+  if (max_streams_ == 1 && instantiateDeviceId_ == launch_stream->DeviceId()) {
     if (DEBUG_CLR_GRAPH_PACKET_CAPTURE) {
       // If the graph has kernels that does device side allocation,  during packet capture, heap is
       // allocated because heap pointer has to be added to the AQL packet, and initialized during
@@ -693,18 +712,18 @@ hipError_t GraphExec::Run(hipStream_t graph_launch_stream) {
         initialized = true;
       }
     }
-    status = EnqueueGraphWithSingleList(topoOrder_, launch_stream, this);
-  } else if (clonedGraph_->max_streams_ == 1 && instantiateDeviceId_ != launch_stream->DeviceId()) {
+    status = EnqueueGraphWithSingleList(launch_stream);
+  } else if (max_streams_ == 1 && instantiateDeviceId_ != launch_stream->DeviceId()) {
     for (int i = 0; i < topoOrder_.size(); i++) {
-      topoOrder_[i]->SetStream(launch_stream, this);
+      topoOrder_[i]->SetStream(launch_stream);
       status = topoOrder_[i]->CreateCommand(topoOrder_[i]->GetQueue());
       topoOrder_[i]->EnqueueCommands(launch_stream);
     }
   } else {
     // Update streams for the graph execution
-    clonedGraph_->UpdateStreams(launch_stream, parallel_streams_);
+    UpdateStreams(launch_stream, parallel_streams_);
     // Execute all nodes in the graph
-    if (!clonedGraph_->RunNodes()) {
+    if (!RunNodes()) {
       LogError("Failed to launch nodes!");
       return hipErrorOutOfMemory;
     }
@@ -714,23 +733,12 @@ hipError_t GraphExec::Run(hipStream_t graph_launch_stream) {
   // we may not need to flush any caches.
   CallbackCommand->setEventScope(amd::Device::kCacheStateIgnore);
   amd::Event& event = CallbackCommand->event();
-  if (!event.setCallback(CL_COMPLETE, GraphExec::DecrementRefCount, this)) {
+  constexpr bool kBlocking = false;
+  if (!event.setCallback(CL_COMPLETE, GraphExec::DecrementRefCount, this, kBlocking)) {
     return hipErrorInvalidHandle;
   }
   CallbackCommand->enqueue();
-  // Add the new barrier to stall the stream, until the callback is done
-  amd::Command::EventWaitList eventWaitList;
-  eventWaitList.push_back(CallbackCommand);
-  amd::Command* block_command = new amd::Marker(*launch_stream, kMarkerDisableFlush, eventWaitList);
-  // we may not need to flush any caches.
-  block_command->setEventScope(amd::Device::kCacheStateIgnore);
-  if (block_command == nullptr) {
-    return hipErrorInvalidValue;
-  }
-  block_command->enqueue();
-  block_command->release();
   CallbackCommand->release();
-  ResetQueueIndex();
   return status;
 }
 

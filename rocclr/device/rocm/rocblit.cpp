@@ -63,6 +63,7 @@ bool DmaBlitManager::readBuffer(device::Memory& srcMemory, void* dstHost,
     return HostBlitManager::readBuffer(srcMemory, dstHost, origin, size, entire, copyMetadata);
   } else {
     size_t copySize = size[0];
+    ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "Unpinned read path");
     if (0 != copySize) {
       const_address addrSrc = gpuMem(srcMemory).getDeviceMemory() + origin[0];
       address addrDst = reinterpret_cast<address>(dstHost);
@@ -516,6 +517,7 @@ inline bool DmaBlitManager::rocrCopyBuffer(address dst, hsa_agent_t& dstAgent,
     copyMask = kUseRegularCopyApi ? 0 : dev().fetchSDMAMask(this, true);
   }
 
+  gpu().Barriers().SetActiveEngine(engine);
   // Check if host wait has to be forced
   bool forceHostWait = forceHostWaitFunc(size);
 
@@ -1707,7 +1709,7 @@ bool KernelBlitManager::readBuffer(device::Memory& srcMemory, void* dstHost,
           copySize = std::min(totalSize, maxStagedXferSize);
           srcAddr += stagedCopyOffset;
           ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "Blit staging D2H copy stg buf=%p, src=%p, "
-                  "dstOrigin=%zu, size=%zu", xferBufAddr, srcAddr, dstOrigin[0], copySize);
+                  "dstOrigin=0x%x, size=%zu", xferBufAddr, srcAddr, dstOrigin[0], copySize);
           // Flush caches for coherency after the copy as we need to std::memcpy
           // from staging buffer to unpinned dst. Also attach a signal to the dispatch packet
           // itself that we can wait on without extra barrier packet.
@@ -1865,7 +1867,9 @@ bool KernelBlitManager::writeBuffer(const void* srcHost, device::Memory& dstMemo
                   stagingBuffer, (void*)(srcAddr + stagedCopyOffset), copySize);
           memcpy(stagingBuffer, srcAddr + stagedCopyOffset, copySize);
           ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "Blit staging H2D copy dst=%p, stg buf=%p, "
-                  "dstOrigin=%zu, size=%zu", dstAddr, stagingBuffer, origin[0], copySize);
+                  "dstOrigin=0x%x, size=%zu", dstAddr, stagingBuffer, origin[0], copySize);
+          // No cache flush is needed here as we use a staging buffer, and the acquire logic
+          // ensures that the cacheline is different and re-used only when L2 is flushed
           result = shaderCopyBuffer(dstAddr, stagingBuffer,
                                     origin, srcOrigin, copySize,
                                     entire, dev().settings().limit_blit_wg_, copyMetadata);
@@ -2253,6 +2257,16 @@ bool KernelBlitManager::copyBuffer(device::Memory& srcMemory, device::Memory& ds
   }
 
   if (!result) {
+    // Flush caches for coherency as the MTYPE of the src buffer may be
+    // non-coherent which mean we need to read it again from memory.
+    // Also if its a device to device copy(intra device), we dont need flush
+    // Check CL_MEM_SVM_ATOMICS flag to see if we used system_coarse_segment_
+    auto memFlags = srcMemory.owner()->getMemFlags();
+    bool srcSvmAtomics = (memFlags & CL_MEM_SVM_ATOMICS) != 0;
+    if ((!srcSvmAtomics && srcMemory.isHostMemDirectAccess()) ||
+        (dstMemory.isHostMemDirectAccess())) {
+      gpu().addSystemScope();
+    }
     result = shaderCopyBuffer(reinterpret_cast<address>(dstMemory.virtualAddress()),
                               reinterpret_cast<address>(srcMemory.virtualAddress()),
                               dstOrigin, srcOrigin, sizeIn,
@@ -2498,6 +2512,38 @@ bool KernelBlitManager::streamOpsWait(device::Memory& memory, uint64_t value, si
     setArgument(kernels_[blitType], 3, sizeof(uint64_t), &flags);
     setArgument(kernels_[blitType], 4, sizeof(uint64_t), &mask);
   }
+
+  // Create ND range object for the kernel's execution
+  amd::NDRangeContainer ndrange(dim, globalWorkOffset, globalWorkSize, localWorkSize);
+
+  // Execute the blit
+  address parameters = captureArguments(kernels_[blitType]);
+  result = gpu().submitKernelInternal(ndrange, *kernels_[blitType], parameters, nullptr);
+  releaseArguments(parameters);
+  synchronize();
+
+  return result;
+}
+
+// ================================================================================================
+bool KernelBlitManager::batchMemOps(const void* paramArray, size_t paramSize,
+                                    uint32_t count) const {
+  amd::ScopedLock k(lockXferOps_);
+  bool result = false;
+  uint blitType = BatchMemOp;
+  size_t dim = 1;
+
+  size_t globalWorkOffset[1] = { 0 };
+  size_t globalWorkSize[1] = { count };
+  size_t localWorkSize[1] = { 1 };
+
+  // Get constant buffer and copy the array of parameters
+  constexpr bool kDirectVa = true;
+  auto constBuf = gpu().allocKernArg((count * paramSize), kCBAlignment);
+  memcpy(constBuf, paramArray, (count * paramSize));
+
+  setArgument(kernels_[blitType], 0, sizeof(cl_mem), constBuf, 0, nullptr, kDirectVa);
+  setArgument(kernels_[blitType], 1, sizeof(uint32_t), &count);
 
   // Create ND range object for the kernel's execution
   amd::NDRangeContainer ndrange(dim, globalWorkOffset, globalWorkSize, localWorkSize);

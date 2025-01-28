@@ -1087,7 +1087,7 @@ bool Device::createSampler(const amd::Sampler& owner, device::Sampler** sampler)
   return true;
 }
 
-void Sampler::fillSampleDescriptor(hsa_ext_sampler_descriptor_t& samplerDescriptor,
+void Sampler::fillSampleDescriptor(hsa_ext_sampler_descriptor_v2_t& samplerDescriptor,
                                    const amd::Sampler& sampler) const {
   samplerDescriptor.filter_mode = sampler.filterMode() == CL_FILTER_NEAREST
       ? HSA_EXT_SAMPLER_FILTER_MODE_NEAREST
@@ -1095,32 +1095,34 @@ void Sampler::fillSampleDescriptor(hsa_ext_sampler_descriptor_t& samplerDescript
   samplerDescriptor.coordinate_mode = sampler.normalizedCoords()
       ? HSA_EXT_SAMPLER_COORDINATE_MODE_NORMALIZED
       : HSA_EXT_SAMPLER_COORDINATE_MODE_UNNORMALIZED;
-  switch (sampler.addressingMode()) {
-    case CL_ADDRESS_CLAMP_TO_EDGE:
-      samplerDescriptor.address_mode = HSA_EXT_SAMPLER_ADDRESSING_MODE_CLAMP_TO_EDGE;
-      break;
-    case CL_ADDRESS_REPEAT:
-      samplerDescriptor.address_mode = HSA_EXT_SAMPLER_ADDRESSING_MODE_REPEAT;
-      break;
-    case CL_ADDRESS_CLAMP:
-      samplerDescriptor.address_mode = HSA_EXT_SAMPLER_ADDRESSING_MODE_CLAMP_TO_BORDER;
-      break;
-    case CL_ADDRESS_MIRRORED_REPEAT:
-      samplerDescriptor.address_mode = HSA_EXT_SAMPLER_ADDRESSING_MODE_MIRRORED_REPEAT;
-      break;
-    case CL_ADDRESS_NONE:
-      samplerDescriptor.address_mode = HSA_EXT_SAMPLER_ADDRESSING_MODE_UNDEFINED;
-      break;
-    default:
-      return;
+  for (int i = 0; i < 3; i++) {
+    switch (sampler.addressingMode(i)) {
+      case CL_ADDRESS_CLAMP_TO_EDGE:
+        samplerDescriptor.address_modes[i] = HSA_EXT_SAMPLER_ADDRESSING_MODE_CLAMP_TO_EDGE;
+        break;
+      case CL_ADDRESS_REPEAT:
+        samplerDescriptor.address_modes[i] = HSA_EXT_SAMPLER_ADDRESSING_MODE_REPEAT;
+        break;
+      case CL_ADDRESS_CLAMP:
+        samplerDescriptor.address_modes[i] = HSA_EXT_SAMPLER_ADDRESSING_MODE_CLAMP_TO_BORDER;
+        break;
+      case CL_ADDRESS_MIRRORED_REPEAT:
+        samplerDescriptor.address_modes[i] = HSA_EXT_SAMPLER_ADDRESSING_MODE_MIRRORED_REPEAT;
+        break;
+      case CL_ADDRESS_NONE:
+        samplerDescriptor.address_modes[i] = HSA_EXT_SAMPLER_ADDRESSING_MODE_UNDEFINED;
+        break;
+      default:
+        return;
+    }
   }
 }
 
 bool Sampler::create(const amd::Sampler& owner) {
-  hsa_ext_sampler_descriptor_t samplerDescriptor;
+  hsa_ext_sampler_descriptor_v2_t samplerDescriptor;
   fillSampleDescriptor(samplerDescriptor, owner);
 
-  hsa_status_t status = hsa_ext_sampler_create(dev_.getBackendDevice(), &samplerDescriptor, &hsa_sampler);
+  hsa_status_t status = hsa_ext_sampler_create_v2(dev_.getBackendDevice(), &samplerDescriptor, &hsa_sampler);
 
   if (HSA_STATUS_SUCCESS != status) {
     DevLogPrintfError("Sampler creation failed with status: %d \n", status);
@@ -1867,7 +1869,7 @@ bool Device::populateOCLDeviceConstants() {
       break;
     case (9):
       if ((isa().versionMinor() == 0 && isa().versionStepping() == 10) ||
-          (isa().versionMinor() == 4)) {
+          isa().versionMinor() == 4 || isa().versionMinor() == 5) {
         info_.vgprAllocGranularity_ = 8;
         info_.vgprsPerSimd_ = 512;
       } else {
@@ -2220,7 +2222,7 @@ void* Device::hostAlloc(size_t size, size_t alignment, MemorySegment mem_seg) co
 
   stat = hsa_amd_agents_allow_access(gpu_agents_.size(), &gpu_agents_[0], nullptr, ptr);
   if (stat != HSA_STATUS_SUCCESS) {
-    LogPrintfError("Fail hsa_amd_agents_alloc_access with err %d", stat);
+    LogPrintfError("Fail hsa_amd_agents_allow_access with err %d", stat);
     hostFree(ptr, size);
     return nullptr;
   }

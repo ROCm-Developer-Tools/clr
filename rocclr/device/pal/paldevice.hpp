@@ -232,7 +232,8 @@ class Sampler : public device::Sampler {
   virtual ~Sampler();
 
   //! Creates a device sampler from the OCL sampler state
-  bool create(uint32_t oclSamplerState  //!< OCL sampler state
+  bool create(uint32_t oclSamplerState,  //!< OCL sampler state
+              const uint addressMode[3]  //!< Address modes in X, Y and Z
   );
 
   //! Creates a device sampler from the OCL sampler state
@@ -539,6 +540,7 @@ class Device : public NullDevice {
   void fillHwSampler(uint32_t state,                       //!< Sampler's OpenCL state
                      void* hwState,                        //!< Sampler's HW state
                      uint32_t hwStateSize,                 //!< Size of sampler's HW state
+                     const uint* addressMode,              //!< Address modes in X, Y and Z
                      uint32_t mipFilter = CL_FILTER_NONE,  //!< Mip filter
                      float minLod = 0.f,                   //!< Min level of detail
                      float maxLod = CL_MAXFLOAT            //!< Max level of detail
@@ -678,6 +680,13 @@ class Device : public NullDevice {
 
   const Pal::GpuMemoryHeapProperties& GetGpuHeapInvisible() const {
     return heaps_[Pal::GpuHeapInvisible];
+  }
+
+  Pal::gpusize TotalAlloc() const {
+    Pal::gpusize local = allocedMem[Pal::GpuHeapLocal] - resourceCache().persistentCacheSize();
+    Pal::gpusize invisible = allocedMem[Pal::GpuHeapInvisible] - resourceCache().lclCacheSize();
+    Pal::gpusize total_alloced = local + invisible;
+    return total_alloced;
   }
 
  private:

@@ -580,9 +580,13 @@ local:
     *;
 } hip_6.1;
 
-hip_6.3 {
+hip_6.4 {
 global:
-    hipExtHostAlloc;
+    hipStreamBatchMemOp;
+    hipGraphAddBatchMemOpNode;
+    hipGraphBatchMemOpNodeGetParams;
+    hipGraphBatchMemOpNodeSetParams;
+    hipGraphExecBatchMemOpNodeSetParams;
 local:
     *;
 } hip_6.2;

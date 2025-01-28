@@ -572,6 +572,9 @@ hipError_t hipModuleLaunchCooperativeKernel(hipFunction_t f, unsigned int gridDi
     HIP_RETURN(hipErrorInvalidValue);
   }
 
+  STREAM_CAPTURE(hipModuleLaunchCooperativeKernel, stream, f, gridDimX, gridDimY, gridDimZ,
+                 blockDimX, blockDimY, blockDimZ, sharedMemBytes, kernelParams);
+
   size_t globalWorkSizeX = static_cast<size_t>(gridDimX) * blockDimX;
   size_t globalWorkSizeY = static_cast<size_t>(gridDimY) * blockDimY;
   size_t globalWorkSizeZ = static_cast<size_t>(gridDimZ) * blockDimZ;
@@ -640,6 +643,22 @@ hipError_t ihipModuleLaunchCooperativeKernelMultiDevice(hipFunctionLaunchParams*
       hip::Stream* hip_stream =
           reinterpret_cast<hip::Stream*>(launchParamsList[i].hStream);
       hip_stream->finish();
+    }
+  }
+
+  // Grid and Block dimensions should match across devices, as well as sharedMemBytes
+  for (uint32_t i = 1; i < numDevices; ++i) {
+    if (launchParamsList[i - 1].gridDimX != launchParamsList[i].gridDimX ||
+        launchParamsList[i - 1].gridDimY != launchParamsList[i].gridDimY ||
+        launchParamsList[i - 1].gridDimZ != launchParamsList[i].gridDimZ ||
+        launchParamsList[i - 1].blockDimX != launchParamsList[i].blockDimX ||
+        launchParamsList[i - 1].blockDimY != launchParamsList[i].blockDimY ||
+        launchParamsList[i - 1].blockDimZ != launchParamsList[i].blockDimZ) {
+      return hipErrorInvalidValue;
+    }
+
+    if (launchParamsList[i - 1].sharedMemBytes != launchParamsList[i].sharedMemBytes) {
+      return hipErrorInvalidValue;
     }
   }
 

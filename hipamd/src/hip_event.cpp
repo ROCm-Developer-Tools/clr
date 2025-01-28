@@ -28,7 +28,7 @@
 namespace hip {
 
 // Guards global event set
-static amd::Monitor eventSetLock{};
+static std::shared_mutex eventSetLock{};
 static std::unordered_set<hipEvent_t> eventSet;
 
 bool Event::ready() {
@@ -237,7 +237,9 @@ hipError_t Event::recordCommand(amd::Command*& command, amd::HostQueue* stream,
 // ================================================================================================
 hipError_t Event::enqueueRecordCommand(hipStream_t stream, amd::Command* command, bool record) {
   command->enqueue();
-  if (event_ == &command->event()) return hipSuccess;
+  if (event_ == &command->event()) {
+    return hipSuccess;
+  }
   if (event_ != nullptr) {
     event_->release();
   }
@@ -250,7 +252,9 @@ hipError_t Event::enqueueRecordCommand(hipStream_t stream, amd::Command* command
 // ================================================================================================
 hipError_t Event::addMarker(hipStream_t stream, amd::Command* command,
                             bool record, bool batch_flush) {
-  hip::Stream* hip_stream = hip::getStream(stream);
+  // Skip wait as we should not be resolving stream in this sub
+  constexpr bool kSkipWait = true;
+  hip::Stream* hip_stream = hip::getStream(stream, kSkipWait);
   // Keep the lock always at the beginning of this to avoid a race. SWDEV-277847
   amd::ScopedLock lock(lock_);
   hipError_t status = recordCommand(command, hip_stream, 0, batch_flush);
@@ -268,7 +272,7 @@ bool isValid(hipEvent_t event) {
     return true;
   }
 
-  amd::ScopedLock lock(eventSetLock);
+  std::shared_lock lock(eventSetLock);
   if (eventSet.find(event) == eventSet.end()) {
     return false;
   }
@@ -315,7 +319,7 @@ hipError_t ihipEventCreateWithFlags(hipEvent_t* event, unsigned flags) {
       return hipErrorOutOfMemory;
     }
     *event = reinterpret_cast<hipEvent_t>(e);
-    amd::ScopedLock lock(hip::eventSetLock);
+    std::unique_lock lock(hip::eventSetLock);
     hip::eventSet.insert(*event);
   } else {
     return hipErrorInvalidValue;
@@ -350,7 +354,7 @@ hipError_t hipEventDestroy(hipEvent_t event) {
     HIP_RETURN(hipErrorInvalidHandle);
   }
 
-  amd::ScopedLock lock(hip::eventSetLock);
+  std::unique_lock lock(hip::eventSetLock);
   if (hip::eventSet.erase(event) == 0 ) {
     return hipErrorContextIsDestroyed;
   }

@@ -92,6 +92,7 @@ class SvmMapMemoryCommand;
 class SvmUnmapMemoryCommand;
 class SvmPrefetchAsyncCommand;
 class StreamOperationCommand;
+class BatchMemoryOperationCommand;
 class VirtualMapCommand;
 class ExternalSemaphoreCmd;
 class Isa;
@@ -1308,6 +1309,9 @@ class VirtualDevice : public amd::HeapObject {
     ShouldNotReachHere();
   }
   virtual void submitStreamOperation(amd::StreamOperationCommand& cmd) { ShouldNotReachHere(); }
+  virtual void submitBatchMemoryOperation(amd::BatchMemoryOperationCommand& cmd) {
+    ShouldNotReachHere();
+  }
   virtual void submitVirtualMap(amd::VirtualMapCommand& cmd) { ShouldNotReachHere(); }
 
   virtual address allocKernelArguments(size_t size, size_t alignment) { return nullptr; }
@@ -1648,6 +1652,12 @@ class Device : public RuntimeObject {
   static constexpr size_t kMGSyncDataSize = sizeof(MGSyncData);
   static constexpr size_t kMGInfoSizePerDevice = kMGSyncDataSize + sizeof(MGSyncInfo);
   static constexpr size_t kSGInfoSize = kMGSyncDataSize;
+
+  // Amount of space used by each wave is in units of 256 dwords.
+  // As per COMPUTE_TMPRING_SIZE.WAVE_SIZE 24:12
+  // The field size supports a range of 0->(2M-256) dwords per wave64.
+  // Per lane this works out to 131056 bytes or 128K - 16
+  static constexpr size_t kMaxStackSize = ((128 * Ki) - 16);
 
   typedef std::list<CommandQueue*> CommandQueues;
 

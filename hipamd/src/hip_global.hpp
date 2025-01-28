@@ -93,9 +93,9 @@ public:
   const std::string& name() const { return name_; }
 
 private:
-  std::vector<DeviceFunc*> dFunc_;  //DeviceFuncObj per Device
-  std::string name_;                //name of the func(not unique identifier)
-  FatBinaryInfo** modules_;      // static module where it is referenced
+  std::vector<DeviceFunc*> dFunc_;  //!< DeviceFuncObj per Device
+  std::string name_;                //!< name of the func(not unique identifier)
+  FatBinaryInfo** modules_;         //!< static module where it is referenced
 };
 
 class Var {
